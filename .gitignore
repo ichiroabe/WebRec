@@ -1,0 +1,25 @@
+# 依存パッケージ
+node_modules/
+
+# ビルド・配布物
+dist/
+build/
+*.zip
+*.crx
+*.pem
+
+# エディタ / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ログ・一時ファイル
+*.log
+npm-debug.log*
+tmp/
+temp/
+
+# 録画データのエクスポート（実データを含むため誤コミットを防ぐ）
+webrec-export-*.json

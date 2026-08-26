@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebRec</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span class="logo">●</span>
+      <h1>WebRec</h1>
+    </header>
+
+    <main>
+      <div id="idleView" class="view">
+        <p class="hint">現在表示中のページを開始URLとして、画面操作の記録を開始します。</p>
+        <button id="startBtn" class="btn btn-primary">● 記録を開始</button>
+      </div>
+
+      <div id="recordingView" class="view hidden">
+        <div class="status">
+          <span class="rec-dot"></span>
+          記録中… <span id="stepCount">0</span> ステップ
+        </div>
+        <p class="hint" id="startUrlHint"></p>
+        <button id="stopBtn" class="btn btn-danger">■ 記録を停止して保存</button>
+      </div>
+
+      <div id="doneView" class="view hidden">
+        <p class="hint" id="doneMessage"></p>
+        <button id="openManagerFromDone" class="btn btn-primary">管理画面で開く</button>
+      </div>
+
+      <p id="errorMsg" class="error hidden"></p>
+    </main>
+
+    <footer>
+      <button id="openManagerBtn" class="link-btn">📋 スクリプト管理を開く</button>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

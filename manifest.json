@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "WebRec - 操作レコーダー",
+  "version": "1.0.0",
+  "description": "画面操作を記録し、再現可能なスクリプト（Playwright / Puppeteer / JSON）として出力・管理する拡張機能",
+  "permissions": ["storage", "scripting", "tabs", "webNavigation"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "WebRec"
+  },
+  "options_page": "src/manager.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebRec - スクリプト管理</title>
+    <link rel="stylesheet" href="manager.css" />
+  </head>
+  <body>
+    <header>
+      <h1>● WebRec スクリプト管理</h1>
+      <span id="countLabel" class="count-label"></span>
+      <div class="header-actions">
+        <button id="importBtn" class="btn">インポート</button>
+        <button id="exportAllBtn" class="btn">全件エクスポート</button>
+        <button id="settingsBtn" class="btn">⚙ 設定</button>
+        <input id="importFile" type="file" accept="application/json,.json" hidden />
+      </div>
+    </header>
+
+    <main>
+      <section id="listSection">
+        <table id="recordingsTable">
+          <thead>
+            <tr>
+              <th>名前 <span class="th-hint">（クリックで変更）</span></th>
+              <th>開始URL</th>
+              <th>作成日時</th>
+              <th>ステップ数</th>
+              <th class="actions-col">操作</th>
+            </tr>
+          </thead>
+          <tbody id="recordingsBody"></tbody>
+        </table>
+        <p id="emptyState" class="empty hidden">
+          保存された録画はまだありません。拡張機能アイコンから「記録を開始」してください。
+        </p>
+      </section>
+    </main>
+
+    <!-- 詳細/コード表示モーダル -->
+    <div id="detailModal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 id="detailTitle"></h2>
+          <button id="closeDetail" class="icon-btn">✕</button>
+        </div>
+
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="steps">ステップ一覧</button>
+          <button class="tab-btn" data-format="json">JSON（編集可）</button>
+          <button class="tab-btn" id="datasetTab" data-format="dataset">データ（繰り返し）</button>
+          <button class="tab-btn" id="recSettingsTab" data-format="recSettings">この録画の設定</button>
+          <button class="tab-btn" data-format="playwright">Playwright</button>
+          <button class="tab-btn" data-format="puppeteer">Puppeteer</button>
+        </div>
+
+        <div id="stepsPanel" class="panel">
+          <ol id="stepsList"></ol>
+        </div>
+        <div id="codePanel" class="panel hidden">
+          <pre id="codeView"></pre>
+        </div>
+        <div id="jsonPanel" class="panel hidden">
+          <p class="panel-hint">
+            JSON がスクリプトの本体です。編集して「保存」するとこの録画に反映されます。<br />
+            ステップに <code>"disabled": true</code>（そのステップを飛ばす）、<code>"optional": true</code>（失敗しても続行）、
+            <code>"timeoutMs"</code>（この要素だけ待ち時間を変更）、<code>"waitBeforeMs"</code>（実行前に待つ）を個別に指定できます。<br />
+            <code>{"type":"wait","ms":5000}</code> や <code>{"type":"waitForSelector","selector":"#done","timeoutMs":120000}</code>
+            を差し込めば、重い処理の完了を個別に待てます。
+          </p>
+          <details class="tpl-help">
+            <summary>入力値に使える変数（本日日付など）</summary>
+            <p class="panel-hint">
+              <code>value</code> や <code>url</code> に書くと、再生のたびに実行時の値へ置き換わります。
+              書き出した Playwright / Puppeteer スクリプトでも同じように動きます。
+            </p>
+            <table id="tplHelpTable"></table>
+          </details>
+          <textarea id="jsonEditor" spellcheck="false"></textarea>
+          <p id="jsonError" class="json-error hidden"></p>
+          <div id="validationBox" class="validation-box hidden">
+            <div class="validation-head">
+              <strong id="validationSummary"></strong>
+              <button id="validationClose" class="icon-btn">✕</button>
+            </div>
+            <ul id="validationList"></ul>
+          </div>
+        </div>
+
+        <div id="datasetPanel" class="panel hidden">
+          <p class="panel-hint">
+            表の1行につきシナリオを1回ずつ実行します。ステップの値に <code>{{data.列名}}</code> と書くと、
+            その行の値に置き換わります（<code>{{row}}</code> は何行目かの番号）。<br />
+            例: 列名 <code>氏名</code> なら <code>{"type":"input","selector":"#name","value":"{{data.氏名}}"}</code>
+          </p>
+          <div class="dataset-toolbar">
+            <button id="datasetCsvBtn" class="btn">CSV/TSV を貼り付けて取り込む</button>
+            <button id="datasetClearBtn" class="btn">データを削除（1回だけ実行に戻す）</button>
+            <span id="datasetCount" class="count-label"></span>
+          </div>
+          <textarea id="datasetEditor" spellcheck="false"></textarea>
+          <p id="datasetError" class="json-error hidden"></p>
+          <div id="datasetPreview" class="dataset-preview"></div>
+        </div>
+
+        <div id="recSettingsPanel" class="panel hidden">
+          <p class="panel-hint">
+            この録画だけに適用される設定です。「全体設定に従う」のチェックを外した項目だけが、
+            管理画面の「⚙ 設定」より優先されます。特定の画面だけ遅い場合は、JSON タブでステップ個別に
+            <code>timeoutMs</code> を指定することもできます。
+          </p>
+          <div id="recSettingsFields"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button id="copyBtn" class="btn">コピー</button>
+          <button id="downloadBtn" class="btn">ダウンロード</button>
+          <button id="validateBtn" class="btn hidden">検証</button>
+          <button id="saveJsonBtn" class="btn btn-accent hidden">保存</button>
+          <button id="revertJsonBtn" class="btn hidden">元に戻す</button>
+          <button id="saveRecSettingsBtn" class="btn btn-accent hidden">保存</button>
+          <button id="clearRecSettingsBtn" class="btn hidden">すべて全体設定に戻す</button>
+          <button id="saveDatasetBtn" class="btn btn-accent hidden">保存</button>
+          <span id="copyMsg" class="copy-msg hidden">コピーしました</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 設定モーダル -->
+    <div id="settingsModal" class="modal-backdrop hidden">
+      <div class="modal modal-narrow">
+        <div class="modal-header">
+          <h2>再生の設定</h2>
+          <button id="closeSettings" class="icon-btn">✕</button>
+        </div>
+        <div class="panel">
+          <p class="panel-hint">
+            ここでの設定はすべての録画に適用されます。特定の録画だけ変えたい場合は、その録画の JSON に
+            <code>"settings": { "pageLoadTimeoutMs": 120000 }</code> を書き加えてください（そちらが優先されます）。
+          </p>
+          <div id="settingsFields"></div>
+
+          <div class="setting-row">
+            <label for="seqInput">次の <code>{{seq}}</code> の値</label>
+            <input id="seqInput" type="number" min="1" />
+            <p class="setting-hint">
+              <code>{{seq}}</code> は再生するたびに 1 ずつ増える通し番号です（<code>{{seq:000}}</code> で0埋め）。
+              1 を入れると次の再生から振り直します。
+            </p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="saveSettingsBtn" class="btn btn-accent">保存</button>
+          <button id="resetSettingsBtn" class="btn">初期値に戻す</button>
+          <span id="settingsMsg" class="copy-msg hidden">保存しました</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- リプレイ進捗モーダル -->
+    <div id="replayModal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>再生中: <span id="replayTitle"></span></h2>
+          <button id="closeReplay" class="icon-btn">✕</button>
+        </div>
+        <div id="replayList" class="replay-list"></div>
+      </div>
+    </div>
+
+    <script type="module" src="manager.js"></script>
+  </body>
+</html>
