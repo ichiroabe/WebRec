@@ -1330,6 +1330,7 @@ function startReplay(rec, opts = {}) {
   const rows = dataset || [null];
   const stepLisByRow = [];
   const rowHeaders = [];
+  const startLis = []; // 「開始URLを開く」の行（読み込み待ちの状態を出す）
 
   rows.forEach((rowData, r) => {
     const section = document.createElement('section');
@@ -1352,6 +1353,7 @@ function startReplay(rec, opts = {}) {
       ? t('steps.useCurrentPage')
       : t('steps.openStartUrl', { url: rec.startUrl });
     ol.appendChild(startLi);
+    startLis.push(startLi);
 
     stepLisByRow.push(
       rec.steps.map((step) => {
@@ -1394,6 +1396,16 @@ function startReplay(rec, opts = {}) {
     if (msg.type === 'PROGRESS') {
       gotProgress = true;
       if (msg.status === 'complete') return;
+
+      // 開始URLの読み込み状況
+      if (msg.marker === 'start') {
+        for (const li of startLis) {
+          li.classList.remove('running', 'done');
+          li.classList.add(msg.status);
+        }
+        if (msg.status === 'running') startLis[0]?.scrollIntoView({ block: 'nearest' });
+        return;
+      }
 
       // 行の開始/終了の通知
       if (msg.marker === 'row') {

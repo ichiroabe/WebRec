@@ -248,13 +248,34 @@ function sleep(ms) {
 
 // イベントリスナー方式だと「呼び出し時点で既に complete」なケースを取りこぼして
 // タイムアウトまで固まって見えるため、ポーリングで現在の状態を都度確認する。
-async function waitForTabComplete(tabId, timeoutMs = 30000) {
+// 最上位フレームの DOM が使える状態か（読み込み完了までは待たない）
+async function isDomUsable(tabId) {
+  try {
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      func: () => document.readyState,
+    });
+    return !!res && (res.result === 'interactive' || res.result === 'complete');
+  } catch (_) {
+    return false; // 遷移中などで読めない。次のポーリングで見直す
+  }
+}
+
+// tab.status === 'complete' を待つのが理想だが、広告や計測タグを読み込み続ける
+// ニュースサイト等では 'complete' にならないことがある。そのまま待つと
+// 「再生中の表示だけで何も起きない」状態が何分も続くため、DOM が使える状態に
+// なっていれば、読み込みの完了を待たずに先へ進む。
+const DOM_READY_GRACE_MS = 8000;
+
+async function waitForTabReady(tabId, timeoutMs = 30000) {
   const start = Date.now();
   for (;;) {
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) throw new Error(t('bg.tabGone'));
     if (tab.status === 'complete') return;
-    if (Date.now() - start > timeoutMs) throw new Error(t('bg.loadTimeout'));
+    const waited = Date.now() - start;
+    if (waited > DOM_READY_GRACE_MS && (await isDomUsable(tabId))) return;
+    if (waited > timeoutMs) throw new Error(t('bg.loadTimeout'));
     await sleep(150);
   }
 }
@@ -759,7 +780,7 @@ async function executeStepWithRetry(tabId, step, cfg) {
   let lastErr = null;
   for (let attempt = 0; attempt < cfg.injectRetries; attempt++) {
     try {
-      await waitForTabComplete(tabId, cfg.pageLoadTimeoutMs);
+      await waitForTabReady(tabId, cfg.pageLoadTimeoutMs);
       // iframe 内の操作もありうるため全フレームに注入し、該当フレームだけが実行する
       const results = await chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
@@ -996,15 +1017,20 @@ async function runReplay(id, onProgress, opts) {
     const win = await chrome.windows.create({ url: firstUrl, focused: true });
     tab = win.tabs[0];
   }
-  await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
+  // 開始URLの読み込みには時間がかかることがある。ここで無言のまま待つと
+  // 「再生中の表示だけで何も起きない」ように見えるので、状態を出しておく。
+  report({ marker: 'start', status: 'running' });
+  await waitForTabReady(tab.id, cfg.pageLoadTimeoutMs);
+  report({ marker: 'start', status: 'done' });
   await stubDialogs(tab.id); // ダイアログで止まらないようにしておく
   // 遷移のたびにダイアログ抑止を入れ直す（フレームが読み込み直されると消えるため）
   startDialogGuard(() => tab.id);
   await sleep(300);
 
   const total = rec.steps.length;
+  let tabGone = false;
 
-  for (let r = 0; r < rows.length; r++) {
+  for (let r = 0; r < rows.length && !tabGone; r++) {
     const tplCtx = { ...baseCtx, data: rows[r], row: r + 1 };
     // marker という別名にしている: port 送信時に { type: 'PROGRESS', ...progress } と
     // 展開されるため、ここで type を使うとメッセージ種別を上書きしてしまう。
@@ -1016,7 +1042,7 @@ async function runReplay(id, onProgress, opts) {
       const startUrl = resolveStepTemplates({ url: rec.startUrl }, tplCtx).url;
       await chrome.tabs.update(tab.id, { url: startUrl });
       await sleep(200);
-      await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
+      await waitForTabReady(tab.id, cfg.pageLoadTimeoutMs);
       await stubDialogs(tab.id);
       await sleep(300);
     }
@@ -1048,14 +1074,14 @@ async function runReplay(id, onProgress, opts) {
           await sleep(Number.isFinite(step.ms) ? step.ms : 1000);
         } else if (step.type === 'navigate') {
           // 直前のクリック等で自然に遷移が始まっている場合があるので、まず完了を待つ。
-          await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
+          await waitForTabReady(tab.id, cfg.pageLoadTimeoutMs);
           const current = await chrome.tabs.get(tab.id).catch(() => null);
           if (!current || current.url !== step.url) {
             // 自然遷移で辿り着いていない場合のみ、対象URLへ直接遷移させる。
             // 既に到達している場合に再遷移しないことで、POST 結果画面などを壊さない。
             await chrome.tabs.update(tab.id, { url: step.url });
             await sleep(200); // status が新しいナビゲーションに切り替わるのを少し待つ
-            await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
+            await waitForTabReady(tab.id, cfg.pageLoadTimeoutMs);
           }
           await stubDialogs(tab.id); // 遷移で window が入れ替わるので入れ直す
         } else if (step.type === 'newTab') {
@@ -1065,7 +1091,7 @@ async function runReplay(id, onProgress, opts) {
             child || (await chrome.tabs.query({ openerTabId: tab.id })).slice(-1)[0] || null;
           if (!opened) throw new Error(t('bg.newTabNotOpened'));
           tab = opened;
-          await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
+          await waitForTabReady(tab.id, cfg.pageLoadTimeoutMs);
           await stubDialogs(tab.id);
           await chrome.tabs.update(tab.id, { active: true });
         } else {
@@ -1092,6 +1118,11 @@ async function runReplay(id, onProgress, opts) {
           status: step.optional ? 'warned' : 'error',
           error: message,
         });
+        // 再生用のタブが無くなった後は、残り全部が同じ失敗になるだけなので打ち切る
+        if (message === t('bg.tabGone')) {
+          tabGone = true;
+          break;
+        }
       }
       await sleep(cfg.stepIntervalMs);
     }
