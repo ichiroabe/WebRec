@@ -28,6 +28,16 @@ header h1 {
   font-weight: 700;
 }
 
+.lang-select {
+  margin-left: auto;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 2px 4px;
+  font-size: 11px;
+  background: #fff;
+  cursor: pointer;
+}
+
 main {
   padding: 16px;
 }

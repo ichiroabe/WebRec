@@ -1,7 +1,10 @@
+import { initI18n, applyI18n, t, getLang, setLang, LANGS } from './i18n.js';
+
 const idleView = document.getElementById('idleView');
 const recordingView = document.getElementById('recordingView');
 const doneView = document.getElementById('doneView');
 const errorMsg = document.getElementById('errorMsg');
+const idleHint = document.getElementById('idleHint');
 
 function showView(view) {
   for (const v of [idleView, recordingView, doneView]) {
@@ -23,12 +26,11 @@ async function refresh() {
   const tab = await getActiveTab();
   const state = await chrome.runtime.sendMessage({ type: 'GET_STATE', tabId: tab?.id });
   if (state && state.isRecording && state.isCurrentTab) {
-    document.getElementById('stepCount').textContent = state.stepCount;
-    document.getElementById('startUrlHint').textContent = `開始URL: ${state.startUrl}`;
+    document.getElementById('stepCount').textContent = t('popup.stepCount', { n: state.stepCount });
+    document.getElementById('startUrlHint').textContent = t('popup.startUrl', { url: state.startUrl });
     showView(recordingView);
   } else if (state && state.isRecording && !state.isCurrentTab) {
-    document.getElementById('idleView').querySelector('.hint').textContent =
-      '別のタブで記録中です。そのタブを開いて操作を続けてください。';
+    idleHint.textContent = t('popup.otherTabHint');
     showView(idleView);
     document.getElementById('startBtn').disabled = true;
   } else {
@@ -39,12 +41,12 @@ async function refresh() {
 document.getElementById('startBtn').addEventListener('click', async () => {
   const tab = await getActiveTab();
   if (!tab || !tab.url || !/^https?:/.test(tab.url)) {
-    showError('このページでは記録を開始できません（http/https のページで開始してください）');
+    showError(t('popup.errNotHttp'));
     return;
   }
   const res = await chrome.runtime.sendMessage({ type: 'START_RECORDING', tabId: tab.id, startUrl: tab.url });
   if (!res || !res.ok) {
-    showError(res?.error || '記録を開始できませんでした');
+    showError(res?.error || t('popup.errStart'));
     return;
   }
   window.close();
@@ -53,10 +55,10 @@ document.getElementById('startBtn').addEventListener('click', async () => {
 document.getElementById('stopBtn').addEventListener('click', async () => {
   const res = await chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
   if (!res || !res.ok) {
-    showError(res?.error || '記録を停止できませんでした');
+    showError(res?.error || t('popup.errStop'));
     return;
   }
-  document.getElementById('doneMessage').textContent = `保存しました（${res.stepCount} ステップ）`;
+  document.getElementById('doneMessage').textContent = t('popup.savedWithSteps', { n: res.stepCount });
   showView(doneView);
 });
 
@@ -67,7 +69,26 @@ function openManager() {
 document.getElementById('openManagerBtn').addEventListener('click', openManager);
 document.getElementById('openManagerFromDone').addEventListener('click', openManager);
 
-refresh();
+// --- 言語切り替え ---
+const langSelect = document.getElementById('langSelect');
+
+langSelect.addEventListener('change', async () => {
+  await setLang(langSelect.value);
+  location.reload();
+});
+
+(async function start() {
+  await initI18n(); // 文言を確定させてから描画する
+  applyI18n();
+  for (const lang of LANGS) {
+    const opt = document.createElement('option');
+    opt.value = lang.code;
+    opt.textContent = lang.label;
+    opt.selected = lang.code === getLang();
+    langSelect.appendChild(opt);
+  }
+  await refresh();
+})();
 
 // 記録中はステップ数を軽く更新し続ける
 setInterval(() => {

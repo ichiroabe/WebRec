@@ -2,42 +2,44 @@
 <html lang="ja">
   <head>
     <meta charset="utf-8" />
-    <title>WebRec</title>
+    <title data-i18n="app.name">WebRec</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <header>
       <span class="logo">●</span>
-      <h1>WebRec</h1>
+      <h1 data-i18n="app.name">WebRec</h1>
+      <select id="langSelect" class="lang-select" data-i18n-title="common.language" aria-label="Language"></select>
     </header>
 
     <main>
       <div id="idleView" class="view">
-        <p class="hint">現在表示中のページを開始URLとして、画面操作の記録を開始します。</p>
-        <button id="startBtn" class="btn btn-primary">● 記録を開始</button>
+        <p class="hint" id="idleHint" data-i18n="popup.idleHint"></p>
+        <button id="startBtn" class="btn btn-primary" data-i18n="popup.start"></button>
       </div>
 
       <div id="recordingView" class="view hidden">
         <div class="status">
           <span class="rec-dot"></span>
-          記録中… <span id="stepCount">0</span> ステップ
+          <span data-i18n="popup.recording"></span>
+          <span id="stepCount"></span>
         </div>
         <p class="hint" id="startUrlHint"></p>
-        <button id="stopBtn" class="btn btn-danger">■ 記録を停止して保存</button>
+        <button id="stopBtn" class="btn btn-danger" data-i18n="popup.stop"></button>
       </div>
 
       <div id="doneView" class="view hidden">
         <p class="hint" id="doneMessage"></p>
-        <button id="openManagerFromDone" class="btn btn-primary">管理画面で開く</button>
+        <button id="openManagerFromDone" class="btn btn-primary" data-i18n="popup.openManager"></button>
       </div>
 
       <p id="errorMsg" class="error hidden"></p>
     </main>
 
     <footer>
-      <button id="openManagerBtn" class="link-btn">📋 スクリプト管理を開く</button>
+      <button id="openManagerBtn" class="link-btn" data-i18n="popup.openManagerLink"></button>
     </footer>
 
-    <script src="popup.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

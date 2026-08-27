@@ -5,6 +5,8 @@
 // 例: {{data.氏名}} と書いてあるのにデータに「氏名」列が無い、など
 //     JSON としては正しいが再生すると意図しない結果になるものを拾う。
 
+import { t } from './i18n.js';
+
 const KNOWN_VARS = ['data', 'row', 'date', 'time', 'datetime', 'random', 'seq', 'uuid'];
 
 function issue(level, code, message, stepIndex = null) {
@@ -56,23 +58,23 @@ export function validateRecording(rec) {
 
   // --- 全体 ---
   if (!steps.length) {
-    issues.push(issue('warning', 'no-steps', 'ステップが1つもありません。再生しても開始URLを開くだけです。'));
+    issues.push(issue('warning', 'no-steps', t('v.noSteps')));
   }
   if (steps.length && steps.every((s) => s.disabled)) {
-    issues.push(issue('warning', 'all-disabled', 'すべてのステップが無効化されています。'));
+    issues.push(issue('warning', 'all-disabled', t('v.allDisabled')));
   }
 
   // --- データセット ---
   if (dataset) {
     if (!dataset.length) {
-      issues.push(issue('warning', 'empty-dataset', 'データが空です。1回だけの実行になります。'));
+      issues.push(issue('warning', 'empty-dataset', t('v.emptyDataset')));
     }
     // 行によって列が欠けていると、その行だけ {{data.○○}} が置換されない
     dataset.forEach((row, i) => {
       const missing = [...datasetColumns].filter((c) => !Object.prototype.hasOwnProperty.call(row, c));
       if (missing.length) {
         issues.push(
-          issue('warning', 'dataset-ragged', `データ ${i + 1} 行目に列がありません: ${missing.join(', ')}`)
+          issue('warning', 'dataset-ragged', t('v.datasetRagged', { row: i + 1, columns: missing.join(', ') }))
         );
       }
     });
@@ -82,23 +84,23 @@ export function validateRecording(rec) {
   const referencedColumns = new Set();
 
   steps.forEach((step, i) => {
-    const at = `ステップ ${i + 1}`;
+    const at = t('v.stepAt', { n: i + 1 });
 
     // セレクタの構文
     if (typeof step.selector === 'string' && step.selector && !isValidSelector(step.selector)) {
-      issues.push(issue('error', 'bad-selector', `${at}: セレクタとして解釈できません: ${step.selector}`, i));
+      issues.push(issue('error', 'bad-selector', t('v.badSelector', { at, selector: step.selector }), i));
     }
     if (step.type === 'dragAndDrop' && typeof step.toSelector === 'string' && !isValidSelector(step.toSelector)) {
-      issues.push(issue('error', 'bad-selector', `${at}: 移動先セレクタが不正です: ${step.toSelector}`, i));
+      issues.push(issue('error', 'bad-selector', t('v.badToSelector', { at, selector: step.toSelector }), i));
     }
 
     // 数値項目
     for (const key of ['timeoutMs', 'waitBeforeMs', 'ms']) {
       if (step[key] !== undefined) {
         if (!Number.isFinite(step[key])) {
-          issues.push(issue('error', 'bad-number', `${at}: ${key} は数値で指定してください`, i));
+          issues.push(issue('error', 'bad-number', t('v.badNumberType', { at, key }), i));
         } else if (step[key] < 0) {
-          issues.push(issue('error', 'bad-number', `${at}: ${key} に負の値は指定できません`, i));
+          issues.push(issue('error', 'bad-number', t('v.badNumberNegative', { at, key }), i));
         }
       }
     }
@@ -106,13 +108,13 @@ export function validateRecording(rec) {
     // navigate の URL
     if (step.type === 'navigate' && typeof step.url === 'string' && step.url.indexOf('{{') === -1) {
       if (!/^https?:\/\//.test(step.url)) {
-        issues.push(issue('error', 'bad-url', `${at}: url は http/https で始まる必要があります`, i));
+        issues.push(issue('error', 'bad-url', t('v.badUrl', { at }), i));
       }
     }
 
     // 空の選択肢
     if (step.type === 'selectMultiple' && Array.isArray(step.values) && !step.values.length) {
-      issues.push(issue('warning', 'empty-values', `${at}: 複数選択の値が空です（何も選ばれません）`, i));
+      issues.push(issue('warning', 'empty-values', t('v.emptyValues', { at }), i));
     }
 
     // アップロード: 中身が保存されていないと再生できない
@@ -120,26 +122,26 @@ export function validateRecording(rec) {
       for (const f of step.files || []) {
         if (f.omitted === 'too-large') {
           issues.push(
-            issue('error', 'upload-too-large', `${at}: ${f.name} は大きすぎて保存されていません（8MBまで）`, i)
+            issue('error', 'upload-too-large', t('v.uploadTooLarge', { at, name: f.name }), i)
           );
         } else if (f.omitted) {
-          issues.push(issue('error', 'upload-not-stored', `${at}: ${f.name} の中身を読み取れませんでした`, i));
+          issues.push(issue('error', 'upload-not-stored', t('v.uploadNotStored', { at, name: f.name }), i));
         } else if (!f.fileId && !f.dataUrl) {
-          issues.push(issue('error', 'upload-missing', `${at}: ${f.name} の中身が保存されていません`, i));
+          issues.push(issue('error', 'upload-missing', t('v.uploadMissing', { at, name: f.name }), i));
         }
       }
     }
 
     // 無効と任意の同時指定は意味がない
     if (step.disabled && step.optional) {
-      issues.push(issue('info', 'disabled-and-optional', `${at}: 無効化されているため optional は効きません`, i));
+      issues.push(issue('info', 'disabled-and-optional', t('v.disabledAndOptional', { at }), i));
     }
 
     // 記録時にマスクされたパスワードがそのまま残っている
     for (const v of valueStrings(step)) {
       if (v.includes('<PASSWORD>')) {
         issues.push(
-          issue('warning', 'password-placeholder', `${at}: <PASSWORD> のままです。実際の値に書き換えてください`, i)
+          issue('warning', 'password-placeholder', t('v.passwordPlaceholder', { at }), i)
         );
       }
     }
@@ -156,17 +158,21 @@ export function validateRecording(rec) {
           const column = (key || (colonKey || '').trim()).trim();
 
           if (!column) {
-            issues.push(issue('error', 'data-no-column', `${at}: ${whole} に列名がありません`, i));
+            issues.push(issue('error', 'data-no-column', t('v.dataNoColumn', { at, var: whole }), i));
           } else if (!dataset) {
             issues.push(
-              issue('error', 'data-without-dataset', `${at}: ${whole} を使っていますが「データ」タブが空です`, i)
+              issue('error', 'data-without-dataset', t('v.dataWithoutDataset', { at, var: whole }), i)
             );
           } else if (!datasetColumns.has(column)) {
             issues.push(
               issue(
                 'error',
                 'data-unknown-column',
-                `${at}: データに「${column}」列がありません（ある列: ${[...datasetColumns].join(', ') || 'なし'}）`,
+                t('v.dataUnknownColumn', {
+                  at,
+                  column,
+                  available: [...datasetColumns].join(', ') || t('v.noColumns'),
+                }),
                 i
               )
             );
@@ -178,7 +184,7 @@ export function validateRecording(rec) {
 
         if (!KNOWN_VARS.includes(name)) {
           issues.push(
-            issue('warning', 'unknown-var', `${at}: ${whole} は未対応の変数です。そのまま文字列として入力されます`, i)
+            issue('warning', 'unknown-var', t('v.unknownVar', { at, var: whole }), i)
           );
         }
       }
@@ -188,7 +194,7 @@ export function validateRecording(rec) {
   // 開始URLの変数もチェック対象にする
   for (const varInfo of extractVars(rec.startUrl)) {
     if (!KNOWN_VARS.includes(varInfo.name) && varInfo.name.indexOf('data.') !== 0) {
-      issues.push(issue('warning', 'unknown-var', `開始URL: ${varInfo.whole} は未対応の変数です`));
+      issues.push(issue('warning', 'unknown-var', t('v.unknownVarStartUrl', { var: varInfo.whole })));
     }
   }
 
@@ -197,7 +203,7 @@ export function validateRecording(rec) {
     const unused = [...datasetColumns].filter((c) => !referencedColumns.has(c));
     if (unused.length) {
       issues.push(
-        issue('info', 'unused-column', `どのステップからも参照されていない列: ${unused.join(', ')}`)
+        issue('info', 'unused-column', t('v.unusedColumn', { columns: unused.join(', ') }))
       );
     }
   }
@@ -212,10 +218,10 @@ export function validateRecording(rec) {
 
 export function summarize(result) {
   const { errors, warnings, infos } = result;
-  if (!errors.length && !warnings.length && !infos.length) return '問題は見つかりませんでした';
+  if (!errors.length && !warnings.length && !infos.length) return t('json.noIssues');
   const parts = [];
-  if (errors.length) parts.push(`エラー ${errors.length}`);
-  if (warnings.length) parts.push(`警告 ${warnings.length}`);
-  if (infos.length) parts.push(`情報 ${infos.length}`);
+  if (errors.length) parts.push(t('json.summaryErrors', { n: errors.length }));
+  if (warnings.length) parts.push(t('json.summaryWarnings', { n: warnings.length }));
+  if (infos.length) parts.push(t('json.summaryInfos', { n: infos.length }));
   return parts.join(' / ');
 }

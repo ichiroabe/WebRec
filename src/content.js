@@ -13,6 +13,29 @@
   let overlayEl = null;
   let dragSource = null;
 
+  // content script は module ではないため i18n.js を import できない。
+  // オーバーレイで使う2語だけをここに持つ。
+  const OVERLAY_TEXT = {
+    ja: { recording: 'WebRec 録画中', stop: '■ 停止' },
+    en: { recording: 'WebRec recording', stop: '■ Stop' },
+  };
+  let overlayLang = 'ja';
+
+  function loadOverlayLang() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get('webrec_lang', (data) => {
+          const saved = data && data.webrec_lang;
+          if (OVERLAY_TEXT[saved]) overlayLang = saved;
+          else overlayLang = String(navigator.language || '').toLowerCase().startsWith('ja') ? 'ja' : 'en';
+          resolve();
+        });
+      } catch (_) {
+        resolve();
+      }
+    });
+  }
+
   function cssEscape(str) {
     if (window.CSS && CSS.escape) return CSS.escape(str);
     return String(str).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c);
@@ -296,10 +319,10 @@
     document.head?.appendChild(style);
 
     const label = document.createElement('span');
-    label.textContent = 'WebRec 録画中';
+    label.textContent = OVERLAY_TEXT[overlayLang].recording;
 
     const stopBtn = document.createElement('button');
-    stopBtn.textContent = '■ 停止';
+    stopBtn.textContent = OVERLAY_TEXT[overlayLang].stop;
     stopBtn.style.cssText =
       'background:#dc2626;color:#fff;border:none;border-radius:999px;padding:3px 10px;font:inherit;cursor:pointer';
     stopBtn.addEventListener('click', () => {
@@ -315,9 +338,10 @@
     overlayEl = null;
   }
 
-  function startListening() {
+  async function startListening() {
     if (recording) return;
     recording = true;
+    await loadOverlayLang(); // オーバーレイを出す前に表示言語を確定させる
     document.addEventListener('click', onClick, true);
     document.addEventListener('change', onChange, true);
     document.addEventListener('keydown', onKeyDown, true);

@@ -15,8 +15,9 @@ import {
   parseDelimitedText,
 } from './generator.js';
 import { getSettings, saveSettings, resetSettings, SETTING_FIELDS, peekSeq, setNextSeq } from './settings.js';
-import { previewTemplate, TEMPLATE_HELP } from './template.js';
+import { previewTemplate, TEMPLATE_HELP, helpSyntax } from './template.js';
 import { validateRecording, summarize } from './validate.js';
+import { initI18n, applyI18n, t, getLang, setLang, LANGS } from './i18n.js';
 
 const recordingsBody = document.getElementById('recordingsBody');
 const emptyState = document.getElementById('emptyState');
@@ -27,12 +28,12 @@ let currentDetailId = null;
 let currentFormat = 'steps'; // 'steps' | 'playwright' | 'puppeteer' | 'json'
 
 function fmtDate(ts) {
-  return new Date(ts).toLocaleString('ja-JP');
+  return new Date(ts).toLocaleString(getLang() === 'ja' ? 'ja-JP' : 'en-US');
 }
 
 async function refreshList() {
   currentList = await getAllRecordings();
-  countLabel.textContent = currentList.length ? `${currentList.length} 件` : '';
+  countLabel.textContent = currentList.length ? t('list.count', { n: currentList.length }) : '';
   emptyState.classList.toggle('hidden', currentList.length > 0);
   recordingsBody.innerHTML = '';
   for (const rec of currentList) {
@@ -48,8 +49,8 @@ function buildRow(rec) {
   const nameInput = document.createElement('input');
   nameInput.className = 'name-input';
   nameInput.value = rec.name;
-  nameInput.title = '名前を変更（Enter で確定 / Esc で取り消し）';
-  nameInput.setAttribute('aria-label', '録画の名前');
+  nameInput.title = t('list.renameTitle');
+  nameInput.setAttribute('aria-label', t('list.nameAria'));
 
   // 変更は blur / Enter で確定する。行の再描画はせず、その場で反映してフォーカスを保つ。
   nameInput.addEventListener('change', async () => {
@@ -95,18 +96,18 @@ function buildRow(rec) {
   wrap.className = 'row-actions';
 
   const viewBtn = document.createElement('button');
-  viewBtn.textContent = '表示';
+  viewBtn.textContent = t('list.view');
   viewBtn.addEventListener('click', () => openDetail(rec.id));
 
   const replayBtn = document.createElement('button');
-  replayBtn.textContent = '▶ 再生';
+  replayBtn.textContent = t('list.replay');
   replayBtn.addEventListener('click', () => startReplay(rec));
 
   const delBtn = document.createElement('button');
-  delBtn.textContent = '削除';
+  delBtn.textContent = t('common.delete');
   delBtn.className = 'danger';
   delBtn.addEventListener('click', async () => {
-    if (!confirm(`「${rec.name}」を削除しますか？`)) return;
+    if (!confirm(t('list.confirmDelete', { name: rec.name }))) return;
     await deleteRecordingWithFiles(rec.id); // 他の録画で使っていないファイルも片付ける
     refreshList();
   });
@@ -161,13 +162,13 @@ function showValidation(result) {
 
     const badge = document.createElement('span');
     badge.className = 'v-badge';
-    badge.textContent = { error: 'エラー', warning: '警告', info: '情報' }[item.level];
+    badge.textContent = { error: t('json.levelError'), warning: t('json.levelWarning'), info: t('json.levelInfo') }[item.level];
     li.appendChild(badge);
     li.appendChild(document.createTextNode(' ' + item.message));
 
     if (Number.isFinite(item.stepIndex)) {
       li.classList.add('clickable');
-      li.title = 'クリックで該当ステップへ移動';
+      li.title = t('json.issueJumpHint');
       li.addEventListener('click', () => {
         selectInEditor(findStepRange(jsonEditor.value, item.stepIndex));
       });
@@ -194,24 +195,30 @@ function runValidation() {
   return result;
 }
 
-// 変数の early reference を避けるため、読み込み時に一度だけ描画する
-(function renderTemplateHelp() {
+// テンプレート変数のヘルプ表（言語切り替え後に描き直せるよう関数にしてある）
+function renderTemplateHelp() {
   const table = document.getElementById('tplHelpTable');
+  table.innerHTML = '';
   for (const item of TEMPLATE_HELP) {
+    const syntax = helpSyntax(item, getLang());
     const tr = document.createElement('tr');
+
     const code = document.createElement('td');
     const codeEl = document.createElement('code');
-    codeEl.textContent = item.syntax;
+    codeEl.textContent = syntax;
     code.appendChild(codeEl);
+
     const desc = document.createElement('td');
-    desc.textContent = item.desc;
+    desc.textContent = t(item.descKey);
+
     const now = document.createElement('td');
     now.className = 'tpl-preview';
-    now.textContent = previewTemplate(item.syntax) ?? '';
+    now.textContent = previewTemplate(syntax) ?? '';
+
     tr.append(code, desc, now);
     table.appendChild(tr);
   }
-})();
+}
 
 // 保存済みのアップロードファイルを取り出す
 async function downloadStoredFile(fileRef) {
@@ -221,7 +228,7 @@ async function downloadStoredFile(fileRef) {
     dataUrl = stored && stored.dataUrl;
   }
   if (!dataUrl) {
-    alert(`「${fileRef.name}」の中身が保存されていません`);
+    alert(t('steps.fileMissing', { name: fileRef.name }));
     return;
   }
   const a = document.createElement('a');
@@ -310,7 +317,7 @@ function flashCopyMsg(text) {
   copyMsg.classList.remove('hidden');
   setTimeout(() => {
     copyMsg.classList.add('hidden');
-    copyMsg.textContent = 'コピーしました';
+    copyMsg.textContent = t('common.copied');
   }, 1500);
 }
 
@@ -328,10 +335,10 @@ const datasetClearBtn = document.getElementById('datasetClearBtn');
 function renderDatasetPreview(dataset) {
   datasetPreview.innerHTML = '';
   if (!dataset || !dataset.length) {
-    datasetCount.textContent = 'データなし（1回だけ実行）';
+    datasetCount.textContent = t('dataset.none');
     return;
   }
-  datasetCount.textContent = `${dataset.length} 行 × ${Object.keys(dataset[0]).length} 列`;
+  datasetCount.textContent = t('dataset.shape', { rows: dataset.length, cols: Object.keys(dataset[0]).length });
 
   // 行によって列が違っても取りこぼさないよう、全行から列名を集める
   const columns = [];
@@ -396,7 +403,7 @@ function renderRecSettings(rec, globals) {
     row.className = 'setting-row';
 
     const label = document.createElement('label');
-    label.textContent = field.label;
+    label.textContent = t(field.labelKey);
 
     const inheritLabel = document.createElement('label');
     inheritLabel.className = 'inherit-label';
@@ -404,7 +411,7 @@ function renderRecSettings(rec, globals) {
     inherit.type = 'checkbox';
     inherit.dataset.inheritFor = field.key;
     inherit.checked = !overridden;
-    inheritLabel.append(inherit, document.createTextNode(` 全体設定に従う（現在 ${globals[field.key]}）`));
+    inheritLabel.append(inherit, document.createTextNode(t('recSettings.inherit', { value: globals[field.key] })));
 
     const input = document.createElement('input');
     input.type = 'number';
@@ -421,7 +428,7 @@ function renderRecSettings(rec, globals) {
 
     const hint = document.createElement('p');
     hint.className = 'setting-hint';
-    hint.textContent = field.hint;
+    hint.textContent = t(field.hintKey);
 
     row.append(label, inheritLabel, input, hint);
     recSettingsFields.appendChild(row);
@@ -466,9 +473,11 @@ async function renderDetail() {
 
   // 個別設定を持つ録画はタブに印をつけて気づけるようにする
   const overrideCount = rec.settings ? Object.keys(rec.settings).length : 0;
-  recSettingsTab.textContent = overrideCount ? `この録画の設定 ●${overrideCount}` : 'この録画の設定';
+  recSettingsTab.textContent = overrideCount
+    ? t('tab.recSettingsWithCount', { n: overrideCount })
+    : t('tab.recSettings');
   const rowCount = Array.isArray(rec.dataset) ? rec.dataset.length : 0;
-  datasetTab.textContent = rowCount ? `データ（繰り返し） ●${rowCount}行` : 'データ（繰り返し）';
+  datasetTab.textContent = rowCount ? t('tab.datasetWithCount', { n: rowCount }) : t('tab.dataset');
 
   if (isDataset) {
     datasetEditor.value = rowCount ? JSON.stringify(rec.dataset, null, 2) : '';
@@ -487,18 +496,18 @@ async function renderDetail() {
 
     const startLi = document.createElement('li');
     startLi.className = 'step-item';
-    startLi.textContent = `開始URLを開く -> ${rec.startUrl}`;
-    startLi.title = 'クリックすると JSON の該当箇所を表示します';
+    startLi.textContent = t('steps.openStartUrl', { url: rec.startUrl });
+    startLi.title = t('steps.jumpHint');
     startLi.addEventListener('click', () => revealInJson(null));
     stepsList.appendChild(startLi);
 
     rec.steps.forEach((step, index) => {
       const li = document.createElement('li');
       li.className = 'step-item';
-      li.title = 'クリックすると JSON の該当箇所を表示します';
+      li.title = t('steps.jumpHint');
       const flags = [];
-      if (step.disabled) flags.push('無効');
-      if (step.optional) flags.push('任意');
+      if (step.disabled) flags.push(t('steps.flagDisabled'));
+      if (step.optional) flags.push(t('steps.flagOptional'));
       li.textContent = stepSummary(step) + (flags.length ? ` （${flags.join(' / ')}）` : '');
 
       // テンプレート変数を含む値は、いま実行したらどうなるかを併記する
@@ -506,7 +515,7 @@ async function renderDetail() {
       if (preview !== null && preview !== undefined) {
         const span = document.createElement('span');
         span.className = 'tpl-preview';
-        span.textContent = ` → 現在は "${preview}"`;
+        span.textContent = t('steps.nowIs', { value: preview });
         li.appendChild(span);
       }
 
@@ -516,8 +525,8 @@ async function renderDetail() {
           if (!f.fileId && !f.dataUrl) continue;
           const btn = document.createElement('button');
           btn.className = 'file-save-btn';
-          btn.textContent = `⭳ ${f.name} を保存`;
-          btn.title = 'このファイルを取り出します（書き出したスクリプトの files/ に置いてください）';
+          btn.textContent = t('steps.saveFile', { name: f.name });
+          btn.title = t('steps.saveFileTitle');
           btn.addEventListener('click', async (e) => {
             e.stopPropagation(); // 行のクリック（JSONへ移動）と競合させない
             await downloadStoredFile(f);
@@ -557,7 +566,7 @@ document.getElementById('closeDetail').addEventListener('click', () => {
 
 validateBtn.addEventListener('click', () => {
   const result = runValidation();
-  if (result && !result.issues.length) flashCopyMsg('問題は見つかりませんでした');
+  if (result && !result.issues.length) flashCopyMsg(t('json.noIssues'));
 });
 
 document.getElementById('validationClose').addEventListener('click', () => {
@@ -584,7 +593,7 @@ saveJsonBtn.addEventListener('click', async () => {
   if (result.issues.length) showValidation(result);
   else validationBox.classList.add('hidden');
   if (result.errors.length) {
-    flashCopyMsg('エラーがあるため保存していません');
+    flashCopyMsg(t('json.notSavedDueToErrors'));
     return;
   }
   await updateRecording(rec.id, {
@@ -596,7 +605,7 @@ saveJsonBtn.addEventListener('click', async () => {
   });
   await refreshList();
   await renderDetail();
-  flashCopyMsg('保存しました');
+  flashCopyMsg(t('common.saved'));
 });
 
 revertJsonBtn.addEventListener('click', () => {
@@ -620,19 +629,19 @@ saveDatasetBtn.addEventListener('click', async () => {
   await updateRecording(rec.id, { dataset });
   await refreshList();
   await renderDetail();
-  flashCopyMsg(dataset ? `${dataset.length} 行を保存しました` : 'データを削除しました');
+  flashCopyMsg(dataset ? t('dataset.savedRows', { n: dataset.length }) : t('dataset.deleted'));
 });
 
 datasetCsvBtn.addEventListener('click', () => {
-  const text = prompt('CSV または TSV を貼り付けてください（1行目が列名）');
+  const text = prompt(t('dataset.csvPrompt'));
   if (text === null) return;
   try {
     const rows = parseDelimitedText(text);
-    if (!rows.length) throw new Error('データ行がありません');
+    if (!rows.length) throw new Error(t('dataset.csvNoRows'));
     datasetEditor.value = JSON.stringify(rows, null, 2);
     datasetError.classList.add('hidden');
     renderDatasetPreview(rows); // 保存前に結果を確認できるようにする
-    flashCopyMsg(`${rows.length} 行を読み込みました（「保存」で確定）`);
+    flashCopyMsg(t('dataset.csvLoaded', { n: rows.length }));
   } catch (err) {
     datasetError.textContent = String(err.message || err);
     datasetError.classList.remove('hidden');
@@ -642,11 +651,11 @@ datasetCsvBtn.addEventListener('click', () => {
 datasetClearBtn.addEventListener('click', async () => {
   const rec = getCurrentRecording();
   if (!rec) return;
-  if (!confirm('データを削除して、1回だけ実行する形に戻しますか？')) return;
+  if (!confirm(t('dataset.confirmClear'))) return;
   await updateRecording(rec.id, { dataset: undefined });
   await refreshList();
   await renderDetail();
-  flashCopyMsg('データを削除しました');
+  flashCopyMsg(t('dataset.deleted'));
 });
 
 // --- 録画ごとの設定を保存 ---
@@ -656,7 +665,7 @@ saveRecSettingsBtn.addEventListener('click', async () => {
   await updateRecording(rec.id, { settings: collectRecSettings() });
   await refreshList();
   await renderDetail();
-  flashCopyMsg('保存しました');
+  flashCopyMsg(t('common.saved'));
 });
 
 clearRecSettingsBtn.addEventListener('click', async () => {
@@ -665,7 +674,7 @@ clearRecSettingsBtn.addEventListener('click', async () => {
   await updateRecording(rec.id, { settings: undefined });
   await refreshList();
   await renderDetail();
-  flashCopyMsg('全体設定に戻しました');
+  flashCopyMsg(t('recSettings.cleared'));
 });
 
 document.getElementById('copyBtn').addEventListener('click', async () => {
@@ -764,7 +773,7 @@ document.getElementById('downloadBtn').addEventListener('click', async () => {
 document.getElementById('exportAllBtn').addEventListener('click', async () => {
   const all = await getAllRecordings();
   if (!all.length) {
-    alert('エクスポートする録画がありません');
+    alert(t('io.nothingToExport'));
     return;
   }
   const recordings = [];
@@ -791,7 +800,7 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
   try {
     raw = JSON.parse(await file.text());
   } catch (err) {
-    alert('JSON の読み込みに失敗しました: ' + err.message);
+    alert(t('io.readFailed', { error: err.message }));
     return;
   }
 
@@ -816,7 +825,7 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
   });
 
   if (!imported.length) {
-    alert('取り込める録画がありませんでした。\n\n' + errors.join('\n'));
+    alert(t('io.nothingImported') + '\n\n' + errors.join('\n'));
     return;
   }
 
@@ -838,14 +847,14 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
   }
 
   await refreshList();
-  const parts = [`${imported.length} 件を取り込みました。`];
-  if (errors.length) parts.push(`\n取り込めなかったもの:\n${errors.join('\n')}`);
+  const parts = [t('io.imported', { n: imported.length })];
+  if (errors.length) parts.push('\n' + t('io.notImported') + '\n' + errors.join('\n'));
   if (warnings.length) {
     // 数が多いと読めないので先頭だけ見せ、残りは件数で示す
     const shown = warnings.slice(0, 10);
-    parts.push(`\n確認が必要な点:\n${shown.join('\n')}`);
-    if (warnings.length > shown.length) parts.push(`…ほか ${warnings.length - shown.length} 件`);
-    parts.push('\n詳しくは各録画の JSON タブで「検証」を実行してください。');
+    parts.push('\n' + t('io.needsAttention') + '\n' + shown.join('\n'));
+    if (warnings.length > shown.length) parts.push(t('io.andMore', { n: warnings.length - shown.length }));
+    parts.push('\n' + t('io.seeValidation'));
   }
   alert(parts.join('\n'));
 });
@@ -862,7 +871,7 @@ function renderSettings(values) {
     row.className = 'setting-row';
 
     const label = document.createElement('label');
-    label.textContent = field.label;
+    label.textContent = t(field.labelKey);
     label.htmlFor = `setting_${field.key}`;
 
     const input = document.createElement('input');
@@ -875,7 +884,7 @@ function renderSettings(values) {
 
     const hint = document.createElement('p');
     hint.className = 'setting-hint';
-    hint.textContent = field.hint;
+    hint.textContent = t(field.hintKey);
 
     row.append(label, input, hint);
     settingsFields.appendChild(row);
@@ -908,13 +917,13 @@ document.getElementById('saveSettingsBtn').addEventListener('click', async () =>
   const saved = await saveSettings(patch);
   renderSettings(saved); // 範囲外の値は丸められるので、確定値を表示し直す
   seqInput.value = String(await setNextSeq(seqInput.value));
-  flashSettingsMsg('保存しました');
+  flashSettingsMsg(t('common.saved'));
 });
 
 document.getElementById('resetSettingsBtn').addEventListener('click', async () => {
   renderSettings(await resetSettings());
   seqInput.value = String(await setNextSeq(1));
-  flashSettingsMsg('初期値に戻しました');
+  flashSettingsMsg(t('settings.resetDone'));
 });
 
 // --- リプレイ ---
@@ -924,7 +933,7 @@ const replayList = document.getElementById('replayList');
 
 function startReplay(rec) {
   const dataset = Array.isArray(rec.dataset) && rec.dataset.length ? rec.dataset : null;
-  replayTitle.textContent = dataset ? `${rec.name}（${dataset.length} 行を繰り返し）` : rec.name;
+  replayTitle.textContent = dataset ? t('replay.withRows', { name: rec.name, n: dataset.length }) : rec.name;
   replayList.innerHTML = '';
 
   // 行ごとにセクションを作る。データがなければ1セクションだけ。
@@ -942,14 +951,14 @@ function startReplay(rec) {
       const summary = Object.entries(rowData)
         .map(([k, v]) => `${k}=${v}`)
         .join(' / ');
-      header.textContent = `${r + 1}/${rows.length} 行目: ${summary}`;
+      header.textContent = t('replay.rowHeader', { current: r + 1, total: rows.length, summary });
       section.appendChild(header);
       rowHeaders.push(header);
     }
 
     const ol = document.createElement('ol');
     const startLi = document.createElement('li');
-    startLi.textContent = `開始URLを開く -> ${rec.startUrl}`;
+    startLi.textContent = t('steps.openStartUrl', { url: rec.startUrl });
     ol.appendChild(startLi);
 
     stepLisByRow.push(
@@ -988,11 +997,11 @@ function startReplay(rec) {
       li.classList.remove('running', 'done', 'error', 'skipped', 'warned');
       li.classList.add(msg.status);
       if (msg.status === 'running') li.scrollIntoView({ block: 'nearest' });
-      if (msg.status === 'error') li.textContent += ` (失敗: ${msg.error})`;
-      if (msg.status === 'warned') li.textContent += ` (任意ステップのため続行: ${msg.error})`;
-      if (msg.status === 'skipped') li.textContent += ' (スキップ)';
+      if (msg.status === 'error') li.textContent += t('replay.failed', { error: msg.error });
+      if (msg.status === 'warned') li.textContent += t('replay.warned', { error: msg.error });
+      if (msg.status === 'skipped') li.textContent += t('replay.skipped');
     } else if (msg.type === 'ERROR') {
-      alert('再生中にエラーが発生しました: ' + msg.error);
+      alert(t('replay.error', { error: msg.error }));
     }
   });
   port.postMessage({ type: 'START', id: rec.id });
@@ -1002,4 +1011,31 @@ document.getElementById('closeReplay').addEventListener('click', () => {
   replayModal.classList.add('hidden');
 });
 
-refreshList();
+// --- 言語切り替え ---
+const langSelect = document.getElementById('langSelect');
+
+function renderLangSelect() {
+  langSelect.innerHTML = '';
+  for (const lang of LANGS) {
+    const opt = document.createElement('option');
+    opt.value = lang.code;
+    opt.textContent = lang.label;
+    opt.selected = lang.code === getLang();
+    langSelect.appendChild(opt);
+  }
+}
+
+langSelect.addEventListener('change', async () => {
+  await setLang(langSelect.value);
+  // 開いているダイアログや生成済みの行も含めて確実に切り替えるため読み込み直す
+  location.reload();
+});
+
+// --- 起動 ---
+(async function start() {
+  await initI18n(); // 文言を確定させてから描画する
+  applyI18n();
+  renderLangSelect();
+  renderTemplateHelp();
+  await refreshList();
+})();

@@ -33,6 +33,16 @@ header h1 {
   margin-left: auto;
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+.lang-select {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 5px 6px;
+  font-size: 12px;
+  background: #fff;
+  cursor: pointer;
 }
 
 main {

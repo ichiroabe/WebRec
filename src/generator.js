@@ -1,6 +1,7 @@
 // WebRec: 記録したステップ列から、再現可能なスクリプトを生成する。
 
 import { resolveTemplate } from './template.js';
+import { t } from './i18n.js';
 
 function jsStr(v) {
   return JSON.stringify(v == null ? '' : v);
@@ -459,33 +460,33 @@ export function generateScript(rec, format) {
 export function stepSummary(step) {
   const inFrame =
     step.frames && step.frames.length
-      ? ` [iframe: ${step.frames.map((f) => (typeof f === 'string' ? f : f.url)).join(' > ')}]`
+      ? t('step.inFrame', { frames: step.frames.map((f) => (typeof f === 'string' ? f : f.url)).join(' > ') })
       : '';
   switch (step.type) {
     case 'navigate':
-      return `ページ遷移 -> ${step.url}`;
+      return t('step.navigate', { url: step.url });
     case 'wait':
-      return `待機: ${Number.isFinite(step.ms) ? step.ms : 1000}ms`;
+      return t('step.wait', { ms: Number.isFinite(step.ms) ? step.ms : 1000 });
     case 'waitForSelector':
-      return `要素の出現待ち: ${step.selector}${inFrame}`;
+      return t('step.waitForSelector', { selector: step.selector }) + inFrame;
     case 'upload': {
       const files = step.files || [];
-      if (!files.length) return `ファイル選択を解除: ${step.selector}${inFrame}`;
-      const names = files.map((f) => f.name + (f.omitted ? '（中身なし）' : '')).join(', ');
-      return `ファイル選択: ${step.selector} = ${names}${inFrame}`;
+      if (!files.length) return t('step.uploadClear', { selector: step.selector }) + inFrame;
+      const names = files.map((f) => f.name + (f.omitted ? t('step.uploadOmitted') : '')).join(', ');
+      return t('step.upload', { selector: step.selector, names }) + inFrame;
     }
     case 'click':
-      return `クリック: ${step.text ? `"${step.text}" ` : ''}${step.selector}${inFrame}`;
+      return t('step.click', { text: step.text ? `"${step.text}" ` : '', selector: step.selector }) + inFrame;
     case 'input':
-      return `入力: ${step.selector} = "${step.value}"${inFrame}`;
+      return t('step.input', { selector: step.selector, value: step.value }) + inFrame;
     case 'select':
-      return `選択: ${step.selector} = "${step.value}"${inFrame}`;
+      return t('step.select', { selector: step.selector, value: step.value }) + inFrame;
     case 'selectMultiple':
-      return `複数選択: ${step.selector} = [${(step.values || []).join(', ')}]${inFrame}`;
+      return t('step.selectMultiple', { selector: step.selector, values: (step.values || []).join(', ') }) + inFrame;
     case 'dragAndDrop':
-      return `ドラッグ&ドロップ: ${step.selector} -> ${step.toSelector}${inFrame}`;
+      return t('step.dragAndDrop', { selector: step.selector, toSelector: step.toSelector }) + inFrame;
     case 'keydown':
-      return `キー入力: ${step.key} (${step.selector})${inFrame}`;
+      return t('step.keydown', { key: step.key, selector: step.selector }) + inFrame;
     default:
       return `${step.type}`;
   }

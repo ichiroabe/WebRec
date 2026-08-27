@@ -141,19 +141,29 @@ export function previewTemplate(text, ctx) {
   return resolved === text ? null : resolved;
 }
 
+// desc は表示のたびに t() で引く（言語切り替えに追従させるため）
+// {{data.列名}} の「列名」部分も言語に合わせて見せ方を変える
 export const TEMPLATE_HELP = [
-  { syntax: '{{data.列名}}', desc: '「データ」タブの現在行の値（繰り返し実行）' },
-  { syntax: '{{row}}', desc: '現在が何行目か（1, 2, 3 …）' },
-  { syntax: '{{row:000}}', desc: '同上を0埋め（001, 002 …）' },
-  { syntax: '{{date}}', desc: '本日 (YYYY-MM-DD)' },
-  { syntax: '{{date:YYYY年MM月DD日}}', desc: '書式を指定した本日' },
-  { syntax: '{{date:YYYY/MM/DD|+1d}}', desc: '翌日 (+1d / -3d / +2w / +1m / -1y)' },
-  { syntax: '{{date:YYYY}} {{date:MM}} {{date:DD}}', desc: '年・月・日を個別の欄に入れる' },
-  { syntax: '{{time:HH:mm}}', desc: '現在時刻' },
-  { syntax: '{{datetime}}', desc: '日時 (YYYY-MM-DD HH:mm:ss)' },
-  { syntax: '{{random:0000}}', desc: '4桁の乱数 (0埋め)。#### なら0埋めなし' },
-  { syntax: '{{random:1-100}}', desc: '1〜100 の乱数' },
-  { syntax: '{{seq}}', desc: '再生するたびに1増える通し番号（0埋めなし）' },
-  { syntax: '{{seq:000}}', desc: '同上を0埋め（001, 002 …）' },
-  { syntax: '{{uuid}}', desc: 'ランダムなUUID' },
+  { syntaxKey: 'data', descKey: 'tpl.data' },
+  { syntax: '{{row}}', descKey: 'tpl.row' },
+  { syntax: '{{row:000}}', descKey: 'tpl.rowPadded' },
+  { syntax: '{{date}}', descKey: 'tpl.date' },
+  { syntaxKey: 'dateFormat', descKey: 'tpl.dateFormat' },
+  { syntax: '{{date:YYYY/MM/DD|+1d}}', descKey: 'tpl.dateOffset' },
+  { syntax: '{{date:YYYY}} {{date:MM}} {{date:DD}}', descKey: 'tpl.dateParts' },
+  { syntax: '{{time:HH:mm}}', descKey: 'tpl.time' },
+  { syntax: '{{datetime}}', descKey: 'tpl.datetime' },
+  { syntax: '{{random:0000}}', descKey: 'tpl.randomMask' },
+  { syntax: '{{random:1-100}}', descKey: 'tpl.randomRange' },
+  { syntax: '{{seq}}', descKey: 'tpl.seq' },
+  { syntax: '{{seq:000}}', descKey: 'tpl.seqPadded' },
+  { syntax: '{{uuid}}', descKey: 'tpl.uuid' },
 ];
+
+// 言語によって見せ方を変える構文サンプル
+export function helpSyntax(item, lang) {
+  if (!item.syntaxKey) return item.syntax;
+  if (item.syntaxKey === 'data') return lang === 'ja' ? '{{data.列名}}' : '{{data.column}}';
+  if (item.syntaxKey === 'dateFormat') return lang === 'ja' ? '{{date:YYYY年MM月DD日}}' : '{{date:MM/DD/YYYY}}';
+  return item.syntax || '';
+}

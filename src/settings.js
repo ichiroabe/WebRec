@@ -13,35 +13,12 @@ export const DEFAULT_SETTINGS = {
   injectRetries: 3, // 遷移中などで失敗した際のリトライ回数
 };
 
+// label / hint は表示のたびに t() で引く（言語切り替えに追従させるため）
 export const SETTING_FIELDS = [
-  {
-    key: 'pageLoadTimeoutMs',
-    label: 'ページ読み込み待ち上限 (ms)',
-    hint: 'サーバー応答が遅いサイトではこの値を大きくしてください。',
-    min: 1000,
-    max: 600000,
-  },
-  {
-    key: 'elementTimeoutMs',
-    label: '要素の出現待ち上限 (ms)',
-    hint: '描画に時間がかかる画面ではこの値を大きくしてください。',
-    min: 500,
-    max: 600000,
-  },
-  {
-    key: 'stepIntervalMs',
-    label: 'ステップ間の待ち (ms)',
-    hint: '操作ごとの間隔。アニメーションが多い画面では長めが安定します。',
-    min: 0,
-    max: 60000,
-  },
-  {
-    key: 'injectRetries',
-    label: '失敗時のリトライ回数',
-    hint: 'ページ遷移と重なって失敗した場合に再試行する回数。',
-    min: 1,
-    max: 10,
-  },
+  { key: 'pageLoadTimeoutMs', labelKey: 'settings.pageLoadTimeout', hintKey: 'settings.pageLoadTimeoutHint', min: 1000, max: 600000 },
+  { key: 'elementTimeoutMs', labelKey: 'settings.elementTimeout', hintKey: 'settings.elementTimeoutHint', min: 500, max: 600000 },
+  { key: 'stepIntervalMs', labelKey: 'settings.stepInterval', hintKey: 'settings.stepIntervalHint', min: 0, max: 60000 },
+  { key: 'injectRetries', labelKey: 'settings.injectRetries', hintKey: 'settings.injectRetriesHint', min: 1, max: 10 },
 ];
 
 function sanitize(raw) {
