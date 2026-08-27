@@ -39,6 +39,8 @@ const MESSAGES = {
     'popup.savedWithSteps': '保存しました（{n} ステップ）',
     'popup.openManager': '管理画面で開く',
     'popup.openManagerLink': '📋 スクリプト管理を開く',
+    'popup.replayHere': '▶ このタブで再生',
+    'popup.replayHereHint': 'ログインなど下準備を済ませたこのタブを、そのまま再生先にします。',
     'popup.errNotHttp': 'このページでは記録を開始できません（http/https のページで開始してください）',
     'popup.errStart': '記録を開始できませんでした',
     'popup.errStop': '記録を停止できませんでした',
@@ -52,6 +54,10 @@ const MESSAGES = {
     'bg.loadTimeout': 'ページ読み込みがタイムアウトしました',
     'bg.frameNotFound': '対象のフレームが見つかりません',
     'bg.stepFailed': 'ステップを実行できませんでした',
+    'bg.replayBusy': '別の再生が実行中です。終わってからお試しください。',
+    'bg.assertTextFailed': '文言が一致しません。期待「{expected}」 実際「{actual}」',
+    'bg.assertNotVisible': '要素が見えていません: {selector}',
+    'bg.assertStillThere': '要素が消えていません: {selector}',
     'bg.recordingNotFound': '録画が見つかりません',
     'bg.newTabNotOpened': '新しいタブが開きませんでした',
     'bg.fileTooLarge': 'ファイルが大きすぎて保存されていません: {name}',
@@ -68,6 +74,8 @@ const MESSAGES = {
     // --- 一覧 ---
     'list.import': 'インポート',
     'list.exportAll': '全件エクスポート',
+    'list.runs': '📋 実行ログ',
+    'list.schedules': '⏰ スケジュール',
     'list.settings': '⚙ 設定',
     'list.colName': '名前',
     'list.colNameHint': '（クリックで変更）',
@@ -95,6 +103,7 @@ const MESSAGES = {
 
     // --- ステップ一覧 ---
     'steps.openStartUrl': '開始URLを開く -> {url}',
+    'steps.useCurrentPage': '今表示しているページからそのまま開始',
     'steps.jumpHint': 'クリックすると JSON の該当箇所を表示します',
     'steps.flagDisabled': '無効',
     'steps.flagOptional': '任意',
@@ -107,6 +116,12 @@ const MESSAGES = {
     'steps.insertWaitPrompt': '何秒待ちますか？（小数可）',
     'steps.insertWaitInvalid': '正の数を入力してください',
     'steps.insertWaitDone': '{sec} 秒の待機を差し込みました',
+    'steps.insertAssert': '＋ 検証',
+    'steps.insertAssertTitle': 'このステップの直後に「文言の確認」を差し込みます',
+    'steps.insertAssertPrompt': '{selector} に、この時点で表示されているはずの文言を入れてください（部分一致）',
+    'steps.insertAssertNoTarget': 'このステップには確認できる対象がありません',
+    'steps.insertAssertEmpty': '確認したい文言を入力してください',
+    'steps.insertAssertDone': '検証ステップを差し込みました',
 
     // --- JSON タブ ---
     'json.hint':
@@ -114,7 +129,12 @@ const MESSAGES = {
       'ステップに <code>"disabled": true</code>（そのステップを飛ばす）、<code>"optional": true</code>（失敗しても続行）、' +
       '<code>"timeoutMs"</code>（この要素だけ待ち時間を変更）、<code>"waitBeforeMs"</code>（実行前に待つ）を個別に指定できます。<br />' +
       '<code>{"type":"wait","ms":5000}</code> や <code>{"type":"waitForSelector","selector":"#done","timeoutMs":120000}</code>' +
-      ' を差し込めば、重い処理の完了を個別に待てます。',
+      ' を差し込めば、重い処理の完了を個別に待てます。<br />' +
+      '<b>検証ステップ</b>: <code>{"type":"assertText","selector":"#msg","value":"削除しました"}</code>' +
+      '（<code>"match":"equals"</code> で完全一致）、<code>{"type":"assertVisible","selector":"#ok"}</code>、' +
+      '<code>{"type":"assertMissing","selector":"#row-3"}</code>。期待と違えばその場で止まります。<br />' +
+      '<b>代替セレクタ</b>: <code>"selectors": ["#id", "a[href=\'x.php\']", "a:text(\'受信箱\')"]</code> と書くと上から順に試します' +
+      '（<code>タグ:text("表示文字")</code> は候補が1つに絞れるときだけ使われます）。',
     'json.varsSummary': '入力値に使える変数（本日日付など）',
     'json.varsHint':
       '<code>value</code> や <code>url</code> に書くと、再生のたびに実行時の値へ置き換わります。' +
@@ -183,6 +203,56 @@ const MESSAGES = {
     'replay.warned': ' (任意ステップのため続行: {error})',
     'replay.skipped': ' (スキップ)',
     'replay.error': '再生中にエラーが発生しました: {error}',
+    'replay.usedFallback': ' (代替セレクタで特定: {selector})',
+
+    // --- 実行ログ ---
+    'runs.title': '実行ログ',
+    'runs.hint': '再生 1 回ぶんの結果を残しています。行をクリックすると各ステップの結果が開きます。新しいものから 100 件まで保存します。',
+    'runs.clear': 'すべて削除',
+    'runs.clearConfirm': '実行ログをすべて削除します。よろしいですか？',
+    'runs.empty': 'まだ実行ログはありません。',
+    'runs.duration': '{sec} 秒',
+    'runs.byHand': '手動',
+    'runs.bySchedule': '予定',
+    'runs.status.running': '実行中',
+    'runs.status.done': '成功',
+    'runs.status.failed': '失敗 {n} 件',
+    'runs.status.error': '中断',
+    'runs.rowPrefix': '{row}行目: ',
+    'runs.dialogs': 'ダイアログ: ',
+
+    // --- スケジュール ---
+    'schedule.title': 'スケジュール',
+    'schedule.hint':
+      '録画を定期的に再生します。<b>ブラウザが起動している間だけ</b>動き、開始URLから新しいウィンドウで実行します（ログイン操作を含む録画向き）。実行結果は「実行ログ」に残ります。',
+    'schedule.empty': 'まだ予定はありません。',
+    'schedule.recordingLabel': '録画',
+    'schedule.kindLabel': '実行タイミング',
+    'schedule.kindDaily': '毎日この時刻に',
+    'schedule.kindInterval': '一定の間隔で',
+    'schedule.minutes': '分ごと',
+    'schedule.add': '＋ 予定を追加',
+    'schedule.added': '追加しました',
+    'schedule.whenDaily': '毎日 {at}',
+    'schedule.whenInterval': '{n} 分ごと',
+    'schedule.lastRun': '前回 {when}（{status}）',
+    'schedule.neverRun': '未実行',
+    'schedule.enabledTitle': '有効 / 無効',
+    'schedule.missingRecording': '（録画が削除されています）',
+
+    // --- 再生オプション ---
+    'replayOpts.title': '再生',
+    'replayOpts.hint':
+      'ログインや前準備を手で済ませたタブを再生先に選べます。その場合は「今のページから始める」を有効にすると、開始URLへ移動せずに続きから実行します。',
+    'replayOpts.targetLabel': '再生先',
+    'replayOpts.targetHint': '新しいウィンドウは常に開始URLから始まります。',
+    'replayOpts.newWindow': '新しいウィンドウ（開始URLから）',
+    'replayOpts.keepUrl': '今のページから始める（開始URLへ移動しない）',
+    'replayOpts.keepUrlHint': 'データを繰り返す設定でも、2行目以降の開始URLへの戻しを行いません。',
+    'replayOpts.startAtLabel': '開始ステップ',
+    'replayOpts.startAtHint': '手で済ませた前半（ログインなど）を飛ばせます。',
+    'replayOpts.fromStart': '最初から',
+    'replayOpts.run': '▶ 再生',
 
     // --- インポート / エクスポート ---
     'io.nothingToExport': 'エクスポートする録画がありません',
@@ -198,6 +268,10 @@ const MESSAGES = {
     'step.navigate': 'ページ遷移 -> {url}',
     'step.wait': '待機: {ms}ms',
     'step.waitForSelector': '要素の出現待ち: {selector}',
+    'step.assertTextContains': '検証: {selector} に「{value}」が含まれる',
+    'step.assertTextEquals': '検証: {selector} が「{value}」と一致する',
+    'step.assertVisible': '検証: {selector} が見えている',
+    'step.assertMissing': '検証: {selector} が無い',
     'step.click': 'クリック: {text}{selector}',
     'step.input': '入力: {selector} = "{value}"',
     'step.select': '選択: {selector} = "{value}"',
@@ -207,7 +281,7 @@ const MESSAGES = {
     'step.uploadClear': 'ファイル選択を解除: {selector}',
     'step.upload': 'ファイル選択: {selector} = {names}',
     'step.uploadOmitted': '（中身なし）',
-    'step.inFrame': ' [iframe: {frames}]',
+    'step.inFrame': ' [フレーム: {frames}]',
     'step.dblclick': 'ダブルクリック: {text}{selector}',
     'step.contextmenu': '右クリック: {text}{selector}',
     'step.editable': 'リッチテキスト入力: {selector} = "{text}"',
@@ -224,6 +298,12 @@ const MESSAGES = {
     'v.datasetRagged': 'データ {row} 行目に列がありません: {columns}',
     'v.badSelector': '{at}: セレクタとして解釈できません: {selector}',
     'v.badToSelector': '{at}: 移動先セレクタが不正です: {selector}',
+    'v.badSelectors': '{at}: selectors は 1 つ以上のセレクタの配列にしてください',
+    'v.allSelectorsBad': '{at}: selectors の候補がすべて不正です',
+    'v.someSelectorsBad': '{at}: selectors に使えない候補が混じっています（残りで再生します）',
+    'v.assertNoSelector': '{at}: 検証ステップには selector（または selectors）が必要です',
+    'v.assertNoValue': '{at}: assertText には期待する文言を value に書いてください',
+    'v.assertBadMatch': '{at}: match は "contains" か "equals" のどちらかです',
     'v.badNumberType': '{at}: {key} は数値で指定してください',
     'v.badNumberNegative': '{at}: {key} に負の値は指定できません',
     'v.badUrl': '{at}: url は http/https で始まる必要があります',
@@ -285,6 +365,8 @@ const MESSAGES = {
     'popup.savedWithSteps': 'Saved ({n} steps)',
     'popup.openManager': 'Open in manager',
     'popup.openManagerLink': '📋 Open script manager',
+    'popup.replayHere': '▶ Replay in this tab',
+    'popup.replayHereHint': 'Use this tab — already logged in or set up — as the replay target.',
     'popup.errNotHttp': 'Recording is not available on this page (open an http/https page first)',
     'popup.errStart': 'Could not start recording',
     'popup.errStop': 'Could not stop recording',
@@ -298,6 +380,10 @@ const MESSAGES = {
     'bg.loadTimeout': 'The page took too long to load',
     'bg.frameNotFound': 'Could not find the target frame',
     'bg.stepFailed': 'Could not run the step',
+    'bg.replayBusy': 'Another replay is running. Please wait for it to finish.',
+    'bg.assertTextFailed': 'Text did not match. Expected "{expected}", got "{actual}"',
+    'bg.assertNotVisible': 'Element is not visible: {selector}',
+    'bg.assertStillThere': 'Element is still there: {selector}',
     'bg.recordingNotFound': 'Recording not found',
     'bg.newTabNotOpened': 'No new tab was opened',
     'bg.fileTooLarge': 'Too large to store: {name}',
@@ -314,6 +400,8 @@ const MESSAGES = {
     // --- List ---
     'list.import': 'Import',
     'list.exportAll': 'Export all',
+    'list.runs': '📋 Run log',
+    'list.schedules': '⏰ Schedules',
     'list.settings': '⚙ Settings',
     'list.colName': 'Name',
     'list.colNameHint': '(click to edit)',
@@ -341,6 +429,7 @@ const MESSAGES = {
 
     // --- Steps ---
     'steps.openStartUrl': 'Open start URL -> {url}',
+    'steps.useCurrentPage': 'Start from the page currently shown',
     'steps.jumpHint': 'Click to reveal this step in the JSON',
     'steps.flagDisabled': 'disabled',
     'steps.flagOptional': 'optional',
@@ -353,6 +442,12 @@ const MESSAGES = {
     'steps.insertWaitPrompt': 'How many seconds? (decimals allowed)',
     'steps.insertWaitInvalid': 'Enter a positive number',
     'steps.insertWaitDone': 'Inserted a {sec}s wait',
+    'steps.insertAssert': '+ Assert',
+    'steps.insertAssertTitle': 'Insert a text check right after this step',
+    'steps.insertAssertPrompt': 'Text that should be shown in {selector} at this point (substring match)',
+    'steps.insertAssertNoTarget': 'This step has nothing to check',
+    'steps.insertAssertEmpty': 'Enter the text you want to check',
+    'steps.insertAssertDone': 'Assert step inserted',
 
     // --- JSON tab ---
     'json.hint':
@@ -360,7 +455,12 @@ const MESSAGES = {
       'Each step accepts <code>"disabled": true</code> (skip it), <code>"optional": true</code> (continue on failure), ' +
       '<code>"timeoutMs"</code> (wait longer for this element), and <code>"waitBeforeMs"</code> (pause before running).<br />' +
       'Insert <code>{"type":"wait","ms":5000}</code> or <code>{"type":"waitForSelector","selector":"#done","timeoutMs":120000}</code>' +
-      ' to wait for a slow operation to finish.',
+      ' to wait for a slow operation to finish.<br />' +
+      '<b>Assertions</b>: <code>{"type":"assertText","selector":"#msg","value":"deleted"}</code>' +
+      ' (<code>"match":"equals"</code> for an exact match), <code>{"type":"assertVisible","selector":"#ok"}</code>,' +
+      ' <code>{"type":"assertMissing","selector":"#row-3"}</code>. Replay stops when the page does not match.<br />' +
+      '<b>Fallback selectors</b>: <code>"selectors": ["#id", "a[href=\'x.php\']", "a:text(\'Inbox\')"]</code> are tried in order' +
+      ' (<code>tag:text("label")</code> is only used when it matches exactly one element).',
     'json.varsSummary': 'Variables you can use in values (today’s date, etc.)',
     'json.varsHint':
       'Write these in <code>value</code> or <code>url</code> and they are resolved at run time, every replay. ' +
@@ -429,6 +529,56 @@ const MESSAGES = {
     'replay.warned': ' (optional step, continuing: {error})',
     'replay.skipped': ' (skipped)',
     'replay.error': 'An error occurred during replay: {error}',
+    'replay.usedFallback': ' (found via fallback selector: {selector})',
+
+    // --- Run log ---
+    'runs.title': 'Run log',
+    'runs.hint': 'One record per replay. Click a row to see each step. The newest 100 runs are kept.',
+    'runs.clear': 'Delete all',
+    'runs.clearConfirm': 'Delete the entire run log. Are you sure?',
+    'runs.empty': 'No runs yet.',
+    'runs.duration': '{sec}s',
+    'runs.byHand': 'manual',
+    'runs.bySchedule': 'scheduled',
+    'runs.status.running': 'running',
+    'runs.status.done': 'succeeded',
+    'runs.status.failed': '{n} failed',
+    'runs.status.error': 'aborted',
+    'runs.rowPrefix': 'row {row}: ',
+    'runs.dialogs': 'Dialogs: ',
+
+    // --- Schedules ---
+    'schedule.title': 'Schedules',
+    'schedule.hint':
+      'Replays a recording on a schedule. It runs <b>only while the browser is open</b>, in a new window from the start URL (so include the login steps). Results are kept in the run log.',
+    'schedule.empty': 'No schedules yet.',
+    'schedule.recordingLabel': 'Recording',
+    'schedule.kindLabel': 'When',
+    'schedule.kindDaily': 'Every day at',
+    'schedule.kindInterval': 'Every N minutes',
+    'schedule.minutes': 'min',
+    'schedule.add': '+ Add schedule',
+    'schedule.added': 'Added',
+    'schedule.whenDaily': 'daily at {at}',
+    'schedule.whenInterval': 'every {n} min',
+    'schedule.lastRun': 'last {when} ({status})',
+    'schedule.neverRun': 'not run yet',
+    'schedule.enabledTitle': 'Enabled / disabled',
+    'schedule.missingRecording': '(recording was deleted)',
+
+    // --- Replay options ---
+    'replayOpts.title': 'Replay',
+    'replayOpts.hint':
+      'You can replay in a tab you prepared by hand (logged in, or already on the right screen). Turn on "start from the page currently shown" to continue from there instead of navigating to the start URL.',
+    'replayOpts.targetLabel': 'Replay in',
+    'replayOpts.targetHint': 'A new window always starts from the start URL.',
+    'replayOpts.newWindow': 'New window (from start URL)',
+    'replayOpts.keepUrl': 'Start from the page currently shown (do not open the start URL)',
+    'replayOpts.keepUrlHint': 'With a dataset, rows after the first are not reset to the start URL either.',
+    'replayOpts.startAtLabel': 'Start at step',
+    'replayOpts.startAtHint': 'Skip the steps you already did by hand (login, etc.).',
+    'replayOpts.fromStart': 'From the beginning',
+    'replayOpts.run': '▶ Replay',
 
     // --- Import / export ---
     'io.nothingToExport': 'There are no recordings to export',
@@ -444,6 +594,10 @@ const MESSAGES = {
     'step.navigate': 'Navigate -> {url}',
     'step.wait': 'Wait: {ms}ms',
     'step.waitForSelector': 'Wait for element: {selector}',
+    'step.assertTextContains': 'Assert: {selector} contains "{value}"',
+    'step.assertTextEquals': 'Assert: {selector} equals "{value}"',
+    'step.assertVisible': 'Assert: {selector} is visible',
+    'step.assertMissing': 'Assert: {selector} is gone',
     'step.click': 'Click: {text}{selector}',
     'step.input': 'Type: {selector} = "{value}"',
     'step.select': 'Select: {selector} = "{value}"',
@@ -453,7 +607,7 @@ const MESSAGES = {
     'step.uploadClear': 'Clear file selection: {selector}',
     'step.upload': 'Choose files: {selector} = {names}',
     'step.uploadOmitted': ' (contents not stored)',
-    'step.inFrame': ' [iframe: {frames}]',
+    'step.inFrame': ' [in frame: {frames}]',
     'step.dblclick': 'Double-click: {text}{selector}',
     'step.contextmenu': 'Right-click: {text}{selector}',
     'step.editable': 'Rich text: {selector} = "{text}"',
@@ -470,6 +624,12 @@ const MESSAGES = {
     'v.datasetRagged': 'Data row {row} is missing columns: {columns}',
     'v.badSelector': '{at}: not a valid selector: {selector}',
     'v.badToSelector': '{at}: the drop target selector is invalid: {selector}',
+    'v.badSelectors': '{at}: selectors must be an array with at least one selector',
+    'v.allSelectorsBad': '{at}: every candidate in selectors is invalid',
+    'v.someSelectorsBad': '{at}: some candidates in selectors are unusable (the rest will be used)',
+    'v.assertNoSelector': '{at}: an assert step needs a selector (or selectors)',
+    'v.assertNoValue': '{at}: assertText needs the expected text in value',
+    'v.assertBadMatch': '{at}: match must be either "contains" or "equals"',
     'v.badNumberType': '{at}: {key} must be a number',
     'v.badNumberNegative': '{at}: {key} cannot be negative',
     'v.badUrl': '{at}: url must start with http or https',

@@ -43,6 +43,13 @@
     return String(str).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c);
   }
 
+  // 属性セレクタの値（引用符の中）に入れる文字列のエスケープ。
+  // cssEscape は識別子向けで "a[href=\"x\\.php\"]" のように読みにくくなるため、
+  // 手で直すことの多いセレクタでは最小限のエスケープにする。
+  function attrEscape(str) {
+    return String(str).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
   // Shadow DOM 対応: セレクタは「ホストを辿る道のり」を >>> で繋いだ形にする。
   // 例: my-field#host >>> #innerInput
   // document.querySelector は shadowRoot を貫通しないため、区間ごとに解決する。
@@ -114,6 +121,54 @@
     return buildCssPath(el, root);
   }
 
+  // 表示テキストで要素を指すための独自表記（CSS では書けない）。
+  // 例: a:text("受信箱") / button:text("保存")
+  function textSelector(tag, text) {
+    return `${tag}:text("${attrEscape(text)}")`;
+  }
+
+  // 1つの要素を指す候補を優先順に並べる。再生時は上から順に試すので、
+  // 「サイトの作りに紐づくもの」を先に、「並び順に依存するもの」を後ろに置く。
+  // 記録した1本が外れただけで止まってしまうのを防ぐのが狙い。
+  function getSelectorCandidates(el) {
+    const primary = getSelector(el);
+    if (!primary) return [];
+    const root = rootOf(el);
+    // shadow DOM をまたぐ場合は区間ごとの解決が要るため、候補は増やさない
+    if (root && root.host) return [primary];
+
+    const out = [];
+    const tag = el.tagName.toLowerCase();
+    const push = (sel) => {
+      if (sel && !out.includes(sel) && isUnique(sel, root)) out.push(sel);
+    };
+
+    for (const attr of ['data-testid', 'data-test', 'data-qa', 'data-cy']) {
+      const v = el.getAttribute(attr);
+      if (v) push(`[${attr}="${attrEscape(v)}"]`);
+    }
+    if (el.id) push(`#${cssEscape(el.id)}`);
+    const name = el.getAttribute('name');
+    if (name) push(`${tag}[name="${attrEscape(name)}"]`);
+    const aria = el.getAttribute('aria-label');
+    if (aria) push(`[aria-label="${attrEscape(aria)}"]`);
+    // リンクやフォームの飛び先は、行が増減しても変わらないことが多い
+    const href = el.getAttribute('href');
+    if (href && href !== '#') push(`${tag}[href="${attrEscape(href)}"]`);
+    // ボタンの表示文字は value 属性に入る
+    if (tag === 'input') {
+      const value = el.getAttribute('value');
+      if (value) push(`input[value="${attrEscape(value)}"]`);
+    }
+
+    if (!out.includes(primary)) out.push(primary); // 位置パス（最後の砦）
+
+    // 表示テキスト。入力欄の value を拾ってしまわないよう innerText / aria-label だけを見る
+    const label = (el.innerText || '').trim() || (el.getAttribute('aria-label') || '').trim();
+    if (label) out.push(textSelector(tag, label.slice(0, 60)));
+    return out;
+  }
+
   // shadow root をまたぐ場合は、ホストごとのセレクタを >>> で連ねる
   function getSelector(el) {
     if (!(el instanceof Element)) return null;
@@ -128,36 +183,67 @@
     return segments.join(SHADOW_SEP);
   }
 
-  // iframe 内の要素を再生時に再び特定できるよう、最上位から自フレームまでの
-  // iframe セレクタの連なりを記録しておく。
+  // 親ドキュメント側での要素の位置パス。frameElement は自分の document とは
+  // 別のツリーに属するため、buildCssPath（自 document 前提）とは別に用意する。
+  function cssPathInDoc(el, doc) {
+    const parts = [];
+    let node = el;
+    for (let guard = 0; guard < 30 && node && node.nodeType === Node.ELEMENT_NODE; guard++) {
+      let part = node.tagName.toLowerCase();
+      if (node.id) {
+        parts.unshift(`${part}#${cssEscape(node.id)}`);
+        break;
+      }
+      const parent = node.parentElement;
+      if (parent) {
+        const sameTag = Array.from(parent.children).filter((c) => c.tagName === node.tagName);
+        if (sameTag.length > 1) part += `:nth-of-type(${sameTag.indexOf(node) + 1})`;
+      }
+      parts.unshift(part);
+      if (!parent || node === doc.documentElement) break;
+      node = parent;
+    }
+    return parts.join(' > ');
+  }
+
+  // frameElement（<iframe> でも <frameset> の <frame> でもありうる）を、
+  // 親ドキュメントの中で一意に指すセレクタ。
+  // タグ名を決め打ちにすると frameset 構成のサイトで必ず外れるため、
+  // 実際のタグ名から組み立てる。
+  function frameSelector(frameEl, parentDoc) {
+    const tag = frameEl.tagName.toLowerCase();
+    for (const attr of ['data-testid', 'id', 'name']) {
+      const v = frameEl.getAttribute(attr);
+      if (!v) continue;
+      const candidate = attr === 'id' ? `${tag}#${cssEscape(v)}` : `${tag}[${attr}="${attrEscape(v)}"]`;
+      try {
+        if (parentDoc.querySelectorAll(candidate).length === 1) return candidate;
+      } catch (_) {
+        /* 不正なセレクタになった場合は位置パスに任せる */
+      }
+    }
+    return cssPathInDoc(frameEl, parentDoc);
+  }
+
+  // フレーム内の要素を再生時に再び特定できるよう、最上位から自フレームまでの
+  // フレームセレクタの連なりを記録しておく。
   function getFrameChain() {
     const chain = [];
     let win = window;
-    while (win !== window.top) {
-      const frameEl = win.frameElement;
+    for (let guard = 0; guard < 20 && win !== window.top; guard++) {
+      let frameEl = null;
+      try {
+        frameEl = win.frameElement;
+      } catch (_) {
+        frameEl = null;
+      }
       if (!frameEl) {
         // クロスオリジンで frameElement を読めない場合。URL で識別できるようにしておく。
         chain.unshift({ unresolved: true, url: win.location.href });
         break;
       }
       // frameElement は親ドキュメント側の要素なので、親のスコープで一意なセレクタを作る
-      const parentDoc = frameEl.ownerDocument;
-      let sel = null;
-      for (const attr of ['data-testid', 'id', 'name']) {
-        const v = frameEl.getAttribute(attr);
-        if (v) {
-          const candidate = attr === 'id' ? `#${cssEscape(v)}` : `iframe[${attr}="${cssEscape(v)}"]`;
-          if (parentDoc.querySelectorAll(candidate).length === 1) {
-            sel = candidate;
-            break;
-          }
-        }
-      }
-      if (!sel) {
-        const all = Array.from(parentDoc.querySelectorAll('iframe'));
-        sel = `iframe:nth-of-type(${all.indexOf(frameEl) + 1})`;
-      }
-      chain.unshift(sel);
+      chain.unshift(frameSelector(frameEl, frameEl.ownerDocument));
       win = win.parent;
     }
     return chain;
@@ -212,12 +298,24 @@
     return first instanceof Element ? first : e.target instanceof Element ? e.target : null;
   }
 
-  function send(step) {
+  // el を渡すと、その要素を指す代替セレクタも一緒に記録する。
+  // selector（従来どおりの1本）は候補の先頭と同じで、古い録画との互換のために残す。
+  function send(step, el) {
     const frames = getFrameChain();
+    let selectors;
+    if (el instanceof Element) {
+      const candidates = getSelectorCandidates(el);
+      if (candidates.length > 1) selectors = candidates;
+    }
     chrome.runtime
       .sendMessage({
         type: 'RECORD_EVENT',
-        step: { ...step, frames: frames.length ? frames : undefined, timestamp: Date.now() },
+        step: {
+          ...step,
+          ...(selectors ? { selectors } : {}),
+          frames: frames.length ? frames : undefined,
+          timestamp: Date.now(),
+        },
       })
       .catch(() => {});
   }
@@ -247,7 +345,7 @@
     if (tag === 'select') return; // 選択操作は change イベント側で 'select' ステップとして記録する
     const selector = getSelector(target);
     if (!selector) return;
-    send({ type: 'click', selector, tag, text: visibleText(target) });
+    send({ type: 'click', selector, tag, text: visibleText(target) }, target);
   }
 
   function onChange(e) {
@@ -261,9 +359,9 @@
       if (target.multiple) {
         // 複数選択リストは選ばれている全ての値を保持する
         const values = Array.from(target.selectedOptions).map((o) => o.value);
-        send({ type: 'selectMultiple', selector, values });
+        send({ type: 'selectMultiple', selector, values }, target);
       } else {
-        send({ type: 'select', selector, value: target.value });
+        send({ type: 'select', selector, value: target.value }, target);
       }
       return;
     }
@@ -280,13 +378,13 @@
       // ワンタイムパスワードは記録しても30秒で無効になるうえ、
       // 認証情報そのものなので保存しない。{{totp:...}} に書き換えて使う。
       const value = type === 'password' ? '<PASSWORD>' : isOneTimeCodeField(target) ? '<OTP>' : target.value;
-      send({ type: 'input', selector, value });
+      send({ type: 'input', selector, value }, target);
       return;
     }
     if (tag === 'textarea') {
       const selector = getSelector(target);
       if (!selector) return;
-      send({ type: 'input', selector, value: target.value });
+      send({ type: 'input', selector, value: target.value }, target);
     }
   }
 
@@ -307,7 +405,7 @@
   async function recordFileInput(target, selector) {
     const picked = Array.from(target.files || []);
     if (!picked.length) {
-      send({ type: 'upload', selector, files: [] }); // 選択を解除した操作
+      send({ type: 'upload', selector, files: [] }, target); // 選択を解除した操作
       return;
     }
 
@@ -327,7 +425,7 @@
       }
       files.push(meta);
     }
-    send({ type: 'upload', selector, files });
+    send({ type: 'upload', selector, files }, target);
   }
 
   // 修飾キー単体は記録しない（Shift を押しただけ等）
@@ -370,7 +468,7 @@
     const target = closestClickable(raw);
     const selector = getSelector(target);
     if (!selector) return;
-    send({ type: 'dblclick', selector, text: visibleText(target), replacesClicks: 2 });
+    send({ type: 'dblclick', selector, text: visibleText(target), replacesClicks: 2 }, target);
   }
 
   // --- 右クリック ---
@@ -381,7 +479,7 @@
     const target = closestClickable(raw);
     const selector = getSelector(target);
     if (!selector) return;
-    send({ type: 'contextmenu', selector, text: visibleText(target) });
+    send({ type: 'contextmenu', selector, text: visibleText(target) }, target);
   }
 
   // --- contenteditable（リッチテキストエディタ） ---
@@ -411,7 +509,7 @@
     if (host.innerHTML === before) return; // 変化なし
     const selector = getSelector(host);
     if (!selector) return;
-    send({ type: 'editable', selector, html: host.innerHTML, text: (host.innerText || '').slice(0, 80) });
+    send({ type: 'editable', selector, html: host.innerHTML, text: (host.innerText || '').slice(0, 80) }, host);
   }
 
   // --- スクロール位置 ---
@@ -430,7 +528,7 @@
       if (!(t instanceof Element) || isOwnUi(t)) return;
       const selector = getSelector(t);
       if (!selector) return;
-      send({ type: 'scroll', selector, x: Math.round(t.scrollLeft), y: Math.round(t.scrollTop) });
+      send({ type: 'scroll', selector, x: Math.round(t.scrollLeft), y: Math.round(t.scrollTop) }, t);
     }, 400);
   }
 
@@ -485,7 +583,7 @@
       suppressNextClick = false;
       suppressClickTimer = null;
     }, 500);
-    send({ type: 'pointerPath', selector, points });
+    send({ type: 'pointerPath', selector, points }, target);
   }
 
   // --- HTML5 ドラッグ&ドロップ（左右リスト間の移動などで使われる） ---

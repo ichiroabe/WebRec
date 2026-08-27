@@ -2,9 +2,13 @@
 // background(service worker) と manager.html(管理ページ)の両方から import して使う。
 
 const DB_NAME = 'webrec-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE = 'recordings';
 const FILE_STORE = 'files'; // アップロード用のファイル本体（録画とは別に保持する）
+const RUN_STORE = 'runs'; // 再生の実行ログ（いつ何が起きたかを後から追えるように）
+
+// 実行ログはためすぎると容量を食うので、この件数を超えた古いものから消す
+const MAX_RUNS = 100;
 
 let dbPromise = null;
 
@@ -20,6 +24,10 @@ function openDb() {
       }
       if (!db.objectStoreNames.contains(FILE_STORE)) {
         db.createObjectStore(FILE_STORE, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(RUN_STORE)) {
+        const runs = db.createObjectStore(RUN_STORE, { keyPath: 'id' });
+        runs.createIndex('startedAt', 'startedAt', { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -127,4 +135,38 @@ export async function deleteRecordingWithFiles(id) {
     }
   }
   await deleteRecording(id);
+}
+
+// --- 実行ログ ---
+// 再生 1 回ぶんを 1 レコードとして残す。再生中も逐次上書きするので、
+// 途中で Service Worker が止まっても、そこまでの経過は残る。
+
+export async function saveRun(run) {
+  return withStore('readwrite', (store) => reqToPromise(store.put(run)), RUN_STORE);
+}
+
+export async function getRun(id) {
+  return withStore('readonly', (store) => reqToPromise(store.get(id)), RUN_STORE);
+}
+
+export async function deleteRun(id) {
+  return withStore('readwrite', (store) => reqToPromise(store.delete(id)), RUN_STORE);
+}
+
+export async function getAllRuns() {
+  const list = await withStore('readonly', (store) => reqToPromise(store.getAll()), RUN_STORE);
+  return list.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+}
+
+export async function clearRuns() {
+  return withStore('readwrite', (store) => reqToPromise(store.clear()), RUN_STORE);
+}
+
+// 古い実行ログを間引く（新しいものから MAX_RUNS 件だけ残す）
+export async function pruneRuns() {
+  const all = await getAllRuns();
+  for (const run of all.slice(MAX_RUNS)) {
+    await deleteRun(run.id);
+  }
+  return Math.max(0, all.length - MAX_RUNS);
 }

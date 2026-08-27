@@ -5,6 +5,9 @@ import {
   saveFile,
   getFile,
   deleteRecordingWithFiles,
+  getAllRuns,
+  deleteRun,
+  clearRuns,
 } from './db.js';
 import {
   generateScript,
@@ -101,7 +104,7 @@ function buildRow(rec) {
 
   const replayBtn = document.createElement('button');
   replayBtn.textContent = t('list.replay');
-  replayBtn.addEventListener('click', () => startReplay(rec));
+  replayBtn.addEventListener('click', () => openReplayOptions(rec));
 
   const delBtn = document.createElement('button');
   delBtn.textContent = t('common.delete');
@@ -240,6 +243,42 @@ async function insertWaitBefore(index) {
   await refreshList();
   await renderDetail();
   flashCopyMsg(t('steps.insertWaitDone', { sec: seconds }));
+}
+
+// ステップ一覧から検証ステップを差し込む。
+// 「この時点でこの文言が出ているはず」を JSON を書かずに足せるようにする。
+async function insertAssertAfter(index) {
+  const rec = getCurrentRecording();
+  if (!rec) return;
+  const step = rec.steps[index];
+  const target = step && (step.selector || (step.selectors && step.selectors[0]));
+  if (!target) {
+    alert(t('steps.insertAssertNoTarget'));
+    return;
+  }
+
+  const answer = prompt(t('steps.insertAssertPrompt', { selector: target }), step.text || '');
+  if (answer === null) return;
+  const value = String(answer).trim();
+  if (!value) {
+    alert(t('steps.insertAssertEmpty'));
+    return;
+  }
+
+  const assertStep = {
+    type: 'assertText',
+    selector: step.selector,
+    ...(step.selectors ? { selectors: step.selectors } : {}),
+    ...(step.frames ? { frames: step.frames } : {}),
+    value,
+    match: 'contains',
+  };
+  const steps = [...rec.steps];
+  steps.splice(index + 1, 0, assertStep);
+  await updateRecording(rec.id, { steps });
+  await refreshList();
+  await renderDetail();
+  flashCopyMsg(t('steps.insertAssertDone'));
 }
 
 // 保存済みのアップロードファイルを取り出す
@@ -567,6 +606,19 @@ async function renderDetail() {
         insertWaitBefore(index);
       });
       li.appendChild(waitBtn);
+
+      // このステップの直後に検証を差し込むボタン（対象を持つステップのみ）
+      if (step.selector || (step.selectors && step.selectors.length)) {
+        const assertBtn = document.createElement('button');
+        assertBtn.className = 'insert-wait-btn';
+        assertBtn.textContent = t('steps.insertAssert');
+        assertBtn.title = t('steps.insertAssertTitle');
+        assertBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          insertAssertAfter(index);
+        });
+        li.appendChild(assertBtn);
+      }
 
       if (step.disabled) li.classList.add('step-disabled');
       li.addEventListener('click', () => revealInJson(index));
@@ -959,12 +1011,317 @@ document.getElementById('resetSettingsBtn').addEventListener('click', async () =
   flashSettingsMsg(t('settings.resetDone'));
 });
 
+// --- 実行ログ ---
+const runsModal = document.getElementById('runsModal');
+const runsList = document.getElementById('runsList');
+const runsEmpty = document.getElementById('runsEmpty');
+const runsCount = document.getElementById('runsCount');
+
+function fmtDuration(run) {
+  if (!run.finishedAt) return '';
+  const sec = Math.max(0, Math.round((run.finishedAt - run.startedAt) / 1000));
+  return t('runs.duration', { sec });
+}
+
+function buildRunRow(run) {
+  const wrap = document.createElement('div');
+  wrap.className = 'run-row';
+
+  const head = document.createElement('div');
+  head.className = 'run-head';
+
+  const when = document.createElement('span');
+  when.className = 'run-when';
+  when.textContent = fmtDate(run.startedAt);
+
+  const name = document.createElement('span');
+  name.className = 'run-name';
+  name.textContent = run.name || run.recordingId;
+
+  const trigger = document.createElement('span');
+  trigger.className = 'run-when';
+  trigger.textContent = t(run.trigger === 'schedule' ? 'runs.bySchedule' : 'runs.byHand');
+
+  const badge = document.createElement('span');
+  badge.className = `run-badge ${run.status}`;
+  badge.textContent = t(`runs.status.${run.status}`, { n: run.failedCount || 0 });
+
+  const dur = document.createElement('span');
+  dur.className = 'run-when';
+  dur.textContent = fmtDuration(run);
+
+  const del = document.createElement('button');
+  del.className = 'btn';
+  del.textContent = t('common.delete');
+  del.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await deleteRun(run.id);
+    await refreshRuns();
+  });
+
+  head.append(when, name, trigger, badge, dur, del);
+
+  const detail = document.createElement('div');
+  detail.className = 'run-detail hidden';
+
+  const ol = document.createElement('ol');
+  for (const entry of run.steps || []) {
+    const li = document.createElement('li');
+    li.className = entry.status;
+    let text = entry.summary || entry.type || '';
+    if (run.rowCount > 1) text = t('runs.rowPrefix', { row: (entry.rowIndex || 0) + 1 }) + text;
+    if (entry.error) text += t('replay.failed', { error: entry.error });
+    if (entry.fallback) text += t('replay.usedFallback', { selector: entry.fallback });
+    li.textContent = text;
+    ol.appendChild(li);
+  }
+  detail.appendChild(ol);
+
+  if (run.error) {
+    const err = document.createElement('p');
+    err.className = 'json-error';
+    err.textContent = run.error;
+    detail.appendChild(err);
+  }
+
+  if ((run.dialogs || []).length) {
+    const dlg = document.createElement('div');
+    dlg.className = 'run-dialogs';
+    dlg.textContent =
+      t('runs.dialogs') +
+      run.dialogs.map((d) => `${d.kind}: ${String(d.message || '').slice(0, 80)}`).join(' / ');
+    detail.appendChild(dlg);
+  }
+
+  head.addEventListener('click', () => detail.classList.toggle('hidden'));
+  wrap.append(head, detail);
+  return wrap;
+}
+
+async function refreshRuns() {
+  const runs = await getAllRuns();
+  runsList.innerHTML = '';
+  runsEmpty.classList.toggle('hidden', runs.length > 0);
+  runsCount.textContent = runs.length ? t('list.count', { n: runs.length }) : '';
+  for (const run of runs) runsList.appendChild(buildRunRow(run));
+}
+
+document.getElementById('runsBtn').addEventListener('click', async () => {
+  await refreshRuns();
+  runsModal.classList.remove('hidden');
+});
+document.getElementById('closeRuns').addEventListener('click', () => {
+  runsModal.classList.add('hidden');
+});
+document.getElementById('clearRunsBtn').addEventListener('click', async () => {
+  if (!confirm(t('runs.clearConfirm'))) return;
+  await clearRuns();
+  await refreshRuns();
+});
+
+// --- スケジュール ---
+const scheduleModal = document.getElementById('scheduleModal');
+const scheduleList = document.getElementById('scheduleList');
+const scheduleEmpty = document.getElementById('scheduleEmpty');
+const scheduleRecording = document.getElementById('scheduleRecording');
+const scheduleKind = document.getElementById('scheduleKind');
+const scheduleAt = document.getElementById('scheduleAt');
+const scheduleEvery = document.getElementById('scheduleEvery');
+const scheduleMsg = document.getElementById('scheduleMsg');
+
+let schedules = [];
+
+async function pushSchedules(next) {
+  const res = await chrome.runtime.sendMessage({ type: 'SET_SCHEDULES', schedules: next });
+  schedules = (res && res.schedules) || [];
+  renderSchedules();
+}
+
+function scheduleWhenText(sc) {
+  return sc.kind === 'interval'
+    ? t('schedule.whenInterval', { n: sc.everyMinutes })
+    : t('schedule.whenDaily', { at: sc.at });
+}
+
+function renderSchedules() {
+  scheduleList.innerHTML = '';
+  scheduleEmpty.classList.toggle('hidden', schedules.length > 0);
+  for (const sc of schedules) {
+    const row = document.createElement('div');
+    row.className = 'schedule-row';
+
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = sc.enabled !== false;
+    toggle.title = t('schedule.enabledTitle');
+    toggle.addEventListener('change', () =>
+      pushSchedules(schedules.map((x) => (x.id === sc.id ? { ...x, enabled: toggle.checked } : x)))
+    );
+
+    const name = document.createElement('span');
+    name.className = 'schedule-name';
+    const rec = currentList.find((r) => r.id === sc.recordingId);
+    name.textContent = rec ? rec.name : t('schedule.missingRecording');
+    if (!rec) name.style.color = '#dc2626';
+
+    const when = document.createElement('span');
+    when.className = 'schedule-when';
+    when.textContent = scheduleWhenText(sc);
+
+    const last = document.createElement('span');
+    last.className = 'schedule-last';
+    last.textContent = sc.lastRunAt
+      ? t('schedule.lastRun', { when: fmtDate(sc.lastRunAt), status: t(`runs.status.${sc.lastStatus || 'done'}`, { n: 0 }) })
+      : t('schedule.neverRun');
+
+    const del = document.createElement('button');
+    del.className = 'btn';
+    del.textContent = t('common.delete');
+    del.addEventListener('click', () => pushSchedules(schedules.filter((x) => x.id !== sc.id)));
+
+    row.append(toggle, name, when, last, del);
+    scheduleList.appendChild(row);
+  }
+}
+
+function syncScheduleForm() {
+  const daily = scheduleKind.value === 'daily';
+  document.getElementById('scheduleDailyWrap').classList.toggle('hidden', !daily);
+  document.getElementById('scheduleIntervalWrap').classList.toggle('hidden', daily);
+}
+
+scheduleKind.addEventListener('change', syncScheduleForm);
+
+document.getElementById('scheduleBtn').addEventListener('click', async () => {
+  scheduleRecording.innerHTML = '';
+  for (const rec of currentList) {
+    const opt = document.createElement('option');
+    opt.value = rec.id;
+    opt.textContent = rec.name;
+    scheduleRecording.appendChild(opt);
+  }
+  const res = await chrome.runtime.sendMessage({ type: 'GET_SCHEDULES' });
+  schedules = (res && res.schedules) || [];
+  renderSchedules();
+  syncScheduleForm();
+  scheduleModal.classList.remove('hidden');
+});
+
+document.getElementById('closeSchedule').addEventListener('click', () => {
+  scheduleModal.classList.add('hidden');
+});
+
+document.getElementById('addScheduleBtn').addEventListener('click', async () => {
+  if (!scheduleRecording.value) return;
+  await pushSchedules([
+    ...schedules,
+    {
+      recordingId: scheduleRecording.value,
+      kind: scheduleKind.value,
+      at: scheduleAt.value || '09:00',
+      everyMinutes: Number(scheduleEvery.value) || 60,
+      enabled: true,
+    },
+  ]);
+  scheduleMsg.textContent = t('schedule.added');
+  scheduleMsg.classList.remove('hidden');
+  setTimeout(() => scheduleMsg.classList.add('hidden'), 2000);
+});
+
+// --- 再生オプション（再生先タブ / 開始位置） ---
+const replayOptionsModal = document.getElementById('replayOptionsModal');
+const replayOptionsTitle = document.getElementById('replayOptionsTitle');
+const replayTargetSelect = document.getElementById('replayTargetSelect');
+const replayKeepUrl = document.getElementById('replayKeepUrl');
+const replayStartAt = document.getElementById('replayStartAt');
+const runReplayBtn = document.getElementById('runReplayBtn');
+
+// ポップアップの「このタブで再生」から開かれた場合、対象タブが渡ってくる
+const presetTargetTabId = Number(new URLSearchParams(location.search).get('targetTab'));
+
+function shortUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.host + (u.pathname === '/' ? '' : u.pathname);
+  } catch (_) {
+    return url;
+  }
+}
+
+// 再生先の候補（新しいウィンドウ + 今開いている http(s) のタブ）を並べる
+async function fillTargetSelect() {
+  replayTargetSelect.innerHTML = '';
+  const newWin = document.createElement('option');
+  newWin.value = '';
+  newWin.textContent = t('replayOpts.newWindow');
+  replayTargetSelect.appendChild(newWin);
+
+  const self = await chrome.tabs.getCurrent().catch(() => null);
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    if (!tab.url || !/^https?:/.test(tab.url)) continue;
+    if (self && tab.id === self.id) continue; // 管理画面自身は選ばせない
+    const opt = document.createElement('option');
+    opt.value = String(tab.id);
+    opt.textContent = `${tab.title || shortUrl(tab.url)} — ${shortUrl(tab.url)}`;
+    replayTargetSelect.appendChild(opt);
+  }
+
+  if (presetTargetTabId && replayTargetSelect.querySelector(`option[value="${presetTargetTabId}"]`)) {
+    replayTargetSelect.value = String(presetTargetTabId);
+  }
+}
+
+function syncKeepUrlState() {
+  // 新しいウィンドウで開く場合は必ず開始URLから始まる
+  const isNewWindow = !replayTargetSelect.value;
+  replayKeepUrl.disabled = isNewWindow;
+  if (isNewWindow) replayKeepUrl.checked = false;
+}
+
+replayTargetSelect.addEventListener('change', syncKeepUrlState);
+
+async function openReplayOptions(rec) {
+  replayOptionsTitle.textContent = rec.name;
+
+  await fillTargetSelect();
+  replayKeepUrl.checked = !!replayTargetSelect.value; // 用意したタブを選んだときは既定でON
+  syncKeepUrlState();
+
+  replayStartAt.innerHTML = '';
+  const head = document.createElement('option');
+  head.value = '0';
+  head.textContent = t('replayOpts.fromStart');
+  replayStartAt.appendChild(head);
+  rec.steps.forEach((step, i) => {
+    if (i === 0) return; // 先頭から = 「最初から」
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = `${i + 1}. ${stepSummary(step)}`;
+    replayStartAt.appendChild(opt);
+  });
+
+  replayOptionsModal.classList.remove('hidden');
+  runReplayBtn.onclick = () => {
+    replayOptionsModal.classList.add('hidden');
+    startReplay(rec, {
+      tabId: replayTargetSelect.value ? Number(replayTargetSelect.value) : null,
+      keepCurrentUrl: !replayKeepUrl.disabled && replayKeepUrl.checked,
+      startAtIndex: Number(replayStartAt.value) || 0,
+    });
+  };
+}
+
+document.getElementById('closeReplayOptions').addEventListener('click', () => {
+  replayOptionsModal.classList.add('hidden');
+});
+
 // --- リプレイ ---
 const replayModal = document.getElementById('replayModal');
 const replayTitle = document.getElementById('replayTitle');
 const replayList = document.getElementById('replayList');
 
-function startReplay(rec) {
+function startReplay(rec, opts = {}) {
   const dataset = Array.isArray(rec.dataset) && rec.dataset.length ? rec.dataset : null;
   replayTitle.textContent = dataset ? t('replay.withRows', { name: rec.name, n: dataset.length }) : rec.name;
   replayList.innerHTML = '';
@@ -991,7 +1348,9 @@ function startReplay(rec) {
 
     const ol = document.createElement('ol');
     const startLi = document.createElement('li');
-    startLi.textContent = t('steps.openStartUrl', { url: rec.startUrl });
+    startLi.textContent = opts.keepCurrentUrl
+      ? t('steps.useCurrentPage')
+      : t('steps.openStartUrl', { url: rec.startUrl });
     ol.appendChild(startLi);
 
     stepLisByRow.push(
@@ -1033,11 +1392,18 @@ function startReplay(rec) {
       if (msg.status === 'error') li.textContent += t('replay.failed', { error: msg.error });
       if (msg.status === 'warned') li.textContent += t('replay.warned', { error: msg.error });
       if (msg.status === 'skipped') li.textContent += t('replay.skipped');
+      if (msg.status === 'done' && msg.fallback) li.textContent += t('replay.usedFallback', { selector: msg.fallback });
     } else if (msg.type === 'ERROR') {
       alert(t('replay.error', { error: msg.error }));
     }
   });
-  port.postMessage({ type: 'START', id: rec.id });
+  port.postMessage({
+    type: 'START',
+    id: rec.id,
+    tabId: Number.isFinite(opts.tabId) ? opts.tabId : null,
+    keepCurrentUrl: !!opts.keepCurrentUrl,
+    startAtIndex: Number.isFinite(opts.startAtIndex) ? opts.startAtIndex : 0,
+  });
 }
 
 document.getElementById('closeReplay').addEventListener('click', () => {

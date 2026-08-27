@@ -716,3 +716,117 @@ li.v-info .v-badge {
 .replay-list li.warned {
   color: #d97706;
 }
+
+/* 再生オプションのチェックボックス行 */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.check-row input {
+  margin: 0;
+}
+
+/* 実行ログ */
+.runs-list {
+  max-height: 60vh;
+  overflow: auto;
+  font-size: 13px;
+}
+.run-row {
+  border-bottom: 1px solid #e5e7eb;
+  padding: 8px 4px;
+}
+.run-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.run-head .run-when {
+  color: #6b7280;
+  white-space: nowrap;
+}
+.run-head .run-name {
+  font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-badge {
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.run-badge.done {
+  color: #166534;
+  background: #dcfce7;
+}
+.run-badge.failed,
+.run-badge.error {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+.run-badge.running {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+.run-detail {
+  margin: 6px 0 2px 12px;
+  padding-left: 12px;
+  border-left: 2px solid #e5e7eb;
+  color: #374151;
+}
+.run-detail ol {
+  margin: 0;
+  padding-left: 22px;
+  line-height: 1.8;
+}
+.run-detail li.error {
+  color: #dc2626;
+}
+.run-detail li.done {
+  color: #16a34a;
+}
+.run-detail li.skipped {
+  color: #9ca3af;
+}
+.run-detail li.warned {
+  color: #d97706;
+}
+.run-dialogs {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+/* スケジュール */
+.schedule-list {
+  margin-bottom: 12px;
+}
+.schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 4px;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 13px;
+}
+.schedule-row .schedule-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedule-row .schedule-when {
+  color: #374151;
+  white-space: nowrap;
+}
+.schedule-row .schedule-last {
+  color: #6b7280;
+  font-size: 12px;
+  white-space: nowrap;
+}

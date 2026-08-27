@@ -20,7 +20,10 @@ Japanese and English are both supported. Switch with the selector in the manager
   - **Puppeteer**
   - **JSON** (the raw steps)
   - Copy to clipboard or download as a file.
-- **▶ Replay** opens a new window and reproduces the recorded steps, showing progress step by step.
+- **▶ Replay** reproduces the recorded steps, showing progress step by step. It can run in a new window or in an **existing tab you already prepared** (logged in, on the right screen).
+- Every replay is kept in the **run log** — which step failed, and any dialog that appeared.
+- **⏰ Schedules** run a recording daily at a time, or every N minutes (while the browser is open).
+- **Assertion steps** (`assertText` / `assertVisible` / `assertMissing`) stop the run when the page is not what you expected.
 
 ## Installing (unpacked, for development)
 
@@ -55,6 +58,7 @@ Japanese and English are both supported. Switch with the selector in the manager
 | **Scroll position** | Yes — both window and element |
 | File uploads | Yes — contents included |
 | Operations inside iframes | Yes |
+| **Operations inside frameset `<frame>`s** | Yes — located by name or position |
 | **Links that open a new tab (`target="_blank"`)** | Yes — recording and replay both follow the new tab |
 | **alert / confirm / prompt** | Yes — replaced during replay and answered automatically (see below) |
 | Page transitions (including SPA history changes) | Yes |
@@ -295,7 +299,16 @@ The secret is the Base32 string shown when you enrol an authenticator app (print
 
 ## Login sessions during replay
 
-Replay opens a new window with `chrome.windows.create`. It is a normal (non-incognito) window in the **same profile**, so most things carry over.
+Where replay starts is chosen in the dialog that appears after you press "▶ Replay".
+
+| Target | Behaviour |
+| --- | --- |
+| **New window** (default) | Opened with `chrome.windows.create`, starting from the start URL |
+| **A tab you pick** | Replays in that tab. With "start from the page currently shown" it does not navigate to the start URL and continues from what is on screen |
+
+Pick a tab when you want to log in or set things up by hand first. The popup's "▶ Replay in this tab" opens the manager with that tab preselected. "Start at step" lets you skip the steps you already did yourself (login, etc.).
+
+A new window is a normal (non-incognito) window in the **same profile**, so most things carry over.
 
 | Item | Carried over? |
 | --- | --- |
@@ -306,16 +319,90 @@ Replay opens a new window with `chrome.windows.create`. It is a normal (non-inco
 
 With cookie-based login, a recording that starts from a logged-in screen replays as-is.
 
-If the site keeps its auth token in `sessionStorage`, however, the replay window counts as logged out. In that case **include the login steps in the recording** (start from the login page). You will need that anyway to run the exported script in CI. Passwords are masked as `<PASSWORD>` when recorded, so either replace the value on the JSON tab, or use `{{data.password}}` and manage it from the Data tab.
+If the site keeps its auth token in `sessionStorage`, however, a new window counts as logged out. In that case **include the login steps in the recording**, or log in by hand and pick that tab as the replay target (`sessionStorage` is per tab, so replaying in the same tab keeps it). You will need that anyway to run the exported script in CI. Passwords are masked as `<PASSWORD>` when recorded, so either replace the value on the JSON tab, or use `{{data.password}}` and manage it from the Data tab.
+
+## Run log
+
+"📋 Run log" in the manager keeps one record per replay. Click a row to expand the per-step results.
+
+| Recorded | Details |
+| --- | --- |
+| Start / end time, duration | When it ran and how long it took |
+| Trigger | manual or scheduled |
+| Per-step result | succeeded / failed / skipped / optional-warning, with the error text |
+| Fallback selector used | The candidate that matched when the primary selector missed |
+| Dialogs | Any `alert` / `confirm` / `prompt` raised during the run |
+
+The newest 100 runs are kept; older ones are dropped automatically. "Delete all" clears them by hand.
+
+The log is written as the run proceeds, so **closing the manager tab does not lose what happened so far** (you only lose the live progress view).
+
+## Schedules
+
+"⏰ Schedules" in the manager runs a recording automatically.
+
+- **Every day at** — e.g. 07:30 every day
+- **Every N minutes** — e.g. every 15 minutes
+
+Each row can be enabled/disabled or deleted, and shows the last run time and result. The details are in the run log.
+
+Limits:
+
+- It runs **only while the browser is open** (nothing happens while the machine sleeps; a run may fire late after waking).
+- A scheduled run always opens **a new window at the start URL** — it cannot use a tab you prepared by hand, so **include the login steps in the recording**.
+- Only one replay runs at a time; starting another while one is running is an error.
+
+## Assertion steps (stop when the page is wrong)
+
+For irreversible actions such as deleting or sending, it is safer to confirm the screen first. Add one with the "**+ Assert**" button on each row of the step list, or on the JSON tab.
+
+```json
+{ "type": "assertText", "selector": "#msg", "value": "deleted" }
+{ "type": "assertText", "selector": "#title", "value": "Inbox", "match": "equals" }
+{ "type": "assertVisible", "selector": "#result" }
+{ "type": "assertMissing", "selector": "#row-3" }
+```
+
+- `assertText` — the element's visible text **contains** the expected text (`"match": "equals"` for an exact match)
+- `assertVisible` — the element is actually visible (rejects `display:none` and friends)
+- `assertMissing` — the element is **gone** (to confirm a row disappeared after deleting)
+
+A mismatch fails that step and the run log keeps `Expected "…", got "…"`. Add `"optional": true` to downgrade it to a warning and continue.
+
+## Fallback selectors (one miss does not stop the run)
+
+Recording stores **several ways to point at the same element**, in priority order. Replay tries them from the top, so a small page change is less likely to stop everything.
+
+```json
+{
+  "type": "click",
+  "selector": "a[href=\"right_main.php?mailbox=INBOX\"]",
+  "selectors": [
+    "a[href=\"right_main.php?mailbox=INBOX\"]",
+    "div#box > table > tbody > tr:nth-of-type(1) > td > a",
+    "a:text(\"Inbox\")"
+  ]
+}
+```
+
+The order is `data-testid` → `id` → `name` → `aria-label` → `href` / `value` → CSS path (position) → visible text. `tag:text("label")` is a WebRec-only notation, not CSS, and is used **only when exactly one element matches** (to avoid acting on the wrong one) and only on the last retry.
+
+When something other than the first candidate matched, the progress view and the run log say so. **That message means the primary selector is already dead** — fix it on the JSON tab rather than leaving it.
+
+`selector` (the single, original field) is written alongside, so older recordings and the script exports keep working.
 
 ## Where the data lives
 
-Recordings are stored in IndexedDB (`webrec-db`) in your browser profile. Nothing is ever sent to an external server.
+Recordings, uploaded file contents and the run log all live in IndexedDB (`webrec-db`) in your browser profile; schedules and the language setting live in `chrome.storage.local`. Nothing is ever sent to an external server.
+
+They disappear with the profile, so **export the JSON regularly with "Export all"** — with that file you can restore everything through "Import" on a fresh machine.
 
 ## Known limitations
 
 - Recording is primarily one tab, though a new tab opened by the page (`target="_blank"`) is followed automatically. Tabs you switch to yourself are not.
 - Cross-origin iframes cannot be located, so recording and replay there are incomplete.
+- Only one replay runs at a time (two would fight over the same tab).
+- Scheduled runs only fire while the browser is open; this is not a fit for always-on automation.
 - Password fields (`type="password"`) are masked as `<PASSWORD>`; the real value is never stored.
 - Selectors are generated in the order `data-testid` / `id` / `name` / `aria-label` / CSS path, so pages with highly dynamic DOM structures may replay less reliably.
 - The built-in replay is deliberately simple. For complex SPAs, exporting the Playwright / Puppeteer script and running it under Node.js is recommended.

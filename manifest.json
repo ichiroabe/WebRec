@@ -3,7 +3,7 @@
   "name": "WebRec - 操作レコーダー",
   "version": "1.0.0",
   "description": "画面操作を記録し、再現可能なスクリプト（Playwright / Puppeteer / JSON）として出力・管理する拡張機能",
-  "permissions": ["storage", "scripting", "tabs", "webNavigation"],
+  "permissions": ["storage", "scripting", "tabs", "webNavigation", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "src/background.js",

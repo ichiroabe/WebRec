@@ -12,6 +12,8 @@
       <div class="header-actions">
         <button id="importBtn" class="btn" data-i18n="list.import">Import</button>
         <button id="exportAllBtn" class="btn" data-i18n="list.exportAll">Export all</button>
+        <button id="runsBtn" class="btn" data-i18n="list.runs">Run log</button>
+        <button id="scheduleBtn" class="btn" data-i18n="list.schedules">Schedules</button>
         <button id="settingsBtn" class="btn" data-i18n="list.settings">⚙ Settings</button>
         <select id="langSelect" class="lang-select" data-i18n-title="common.language" aria-label="Language"></select>
         <input id="importFile" type="file" accept="application/json,.json" hidden />
@@ -129,6 +131,98 @@
           <button id="saveSettingsBtn" class="btn btn-accent" data-i18n="common.save">Save</button>
           <button id="resetSettingsBtn" class="btn" data-i18n="settings.reset">Restore defaults</button>
           <span id="settingsMsg" class="copy-msg hidden"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 実行ログ -->
+    <div id="runsModal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 data-i18n="runs.title">Run log</h2>
+          <button id="closeRuns" class="icon-btn">✕</button>
+        </div>
+        <div class="panel">
+          <p class="panel-hint" data-i18n="runs.hint"></p>
+          <div class="dataset-toolbar">
+            <button id="clearRunsBtn" class="btn" data-i18n="runs.clear">Delete all</button>
+            <span id="runsCount" class="count-label"></span>
+          </div>
+          <div id="runsList" class="runs-list"></div>
+          <p id="runsEmpty" class="empty hidden" data-i18n="runs.empty"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- スケジュール -->
+    <div id="scheduleModal" class="modal-backdrop hidden">
+      <div class="modal modal-narrow">
+        <div class="modal-header">
+          <h2 data-i18n="schedule.title">Schedules</h2>
+          <button id="closeSchedule" class="icon-btn">✕</button>
+        </div>
+        <div class="panel">
+          <p class="panel-hint" data-i18n-html="schedule.hint"></p>
+
+          <div id="scheduleList" class="schedule-list"></div>
+          <p id="scheduleEmpty" class="empty hidden" data-i18n="schedule.empty"></p>
+
+          <div class="setting-row">
+            <label for="scheduleRecording" data-i18n="schedule.recordingLabel">Recording</label>
+            <select id="scheduleRecording"></select>
+          </div>
+          <div class="setting-row">
+            <label for="scheduleKind" data-i18n="schedule.kindLabel">When</label>
+            <select id="scheduleKind">
+              <option value="daily" data-i18n="schedule.kindDaily">Every day at</option>
+              <option value="interval" data-i18n="schedule.kindInterval">Every N minutes</option>
+            </select>
+            <span id="scheduleDailyWrap"><input id="scheduleAt" type="time" value="09:00" /></span>
+            <span id="scheduleIntervalWrap" class="hidden">
+              <input id="scheduleEvery" type="number" min="1" max="10080" value="60" />
+              <span data-i18n="schedule.minutes">min</span>
+            </span>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="addScheduleBtn" class="btn btn-accent" data-i18n="schedule.add">Add</button>
+          <span id="scheduleMsg" class="copy-msg hidden"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 再生オプション -->
+    <div id="replayOptionsModal" class="modal-backdrop hidden">
+      <div class="modal modal-narrow">
+        <div class="modal-header">
+          <h2><span data-i18n="replayOpts.title">Replay</span>: <span id="replayOptionsTitle"></span></h2>
+          <button id="closeReplayOptions" class="icon-btn">✕</button>
+        </div>
+        <div class="panel">
+          <p class="panel-hint" data-i18n-html="replayOpts.hint"></p>
+
+          <div class="setting-row">
+            <label for="replayTargetSelect" data-i18n="replayOpts.targetLabel">Replay in</label>
+            <select id="replayTargetSelect"></select>
+            <p class="setting-hint" data-i18n="replayOpts.targetHint"></p>
+          </div>
+
+          <div class="setting-row">
+            <label class="check-row">
+              <input id="replayKeepUrl" type="checkbox" />
+              <span data-i18n="replayOpts.keepUrl">Start from the page currently shown</span>
+            </label>
+            <p class="setting-hint" data-i18n="replayOpts.keepUrlHint"></p>
+          </div>
+
+          <div class="setting-row">
+            <label for="replayStartAt" data-i18n="replayOpts.startAtLabel">Start at step</label>
+            <select id="replayStartAt"></select>
+            <p class="setting-hint" data-i18n="replayOpts.startAtHint"></p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="runReplayBtn" class="btn btn-accent" data-i18n="replayOpts.run">Replay</button>
         </div>
       </div>
     </div>

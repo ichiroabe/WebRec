@@ -66,6 +66,18 @@ function openManager() {
   chrome.runtime.openOptionsPage();
 }
 
+// 今見ているタブ（ログイン済みの画面など）を再生先として管理画面を開く。
+// 管理画面側で対象タブが選択済みになる。
+document.getElementById('replayHereBtn').addEventListener('click', async () => {
+  const tab = await getActiveTab();
+  if (!tab || !tab.url || !/^https?:/.test(tab.url)) {
+    showError(t('popup.errNotHttp'));
+    return;
+  }
+  await chrome.tabs.create({ url: chrome.runtime.getURL('src/manager.html') + `?targetTab=${tab.id}` });
+  window.close();
+});
+
 document.getElementById('openManagerBtn').addEventListener('click', openManager);
 document.getElementById('openManagerFromDone').addEventListener('click', openManager);
 

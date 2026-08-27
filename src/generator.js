@@ -234,6 +234,9 @@ const KNOWN_STEP_TYPES = new Set([
   'scroll',
   'pointerPath',
   'newTab',
+  'assertText',
+  'assertVisible',
+  'assertMissing',
 ]);
 
 // JSON を録画データとして受け入れる前に検証する。
@@ -276,9 +279,25 @@ export function parseRecordingJson(text) {
         throw new Error(`${at}.x / ${at}.y は数値である必要があります`);
       }
     } else {
-      if (typeof step.selector !== 'string' || !step.selector) {
+      // 対象は selector（1本）でも selectors（候補の配列）でも良い
+      const hasSelector = typeof step.selector === 'string' && step.selector;
+      const hasCandidates = Array.isArray(step.selectors) && step.selectors.some((sel) => typeof sel === 'string' && sel);
+      if (!hasSelector && !hasCandidates) {
         throw new Error(`${at}.selector がありません`);
       }
+    }
+    if (step.selectors !== undefined) {
+      if (!Array.isArray(step.selectors) || !step.selectors.length) {
+        throw new Error(`${at}.selectors は1つ以上のセレクタの配列である必要があります`);
+      }
+      step.selectors.forEach((sel, j) => {
+        if (typeof sel !== 'string' || !sel) {
+          throw new Error(`${at}.selectors[${j}] は空でない文字列である必要があります`);
+        }
+      });
+    }
+    if (step.type === 'assertText' && typeof step.value !== 'string') {
+      throw new Error(`${at}.value（期待する文言）がありません`);
     }
     if (step.type === 'selectMultiple' && !Array.isArray(step.values)) {
       throw new Error(`${at}.values は配列である必要があります`);
@@ -325,11 +344,20 @@ function pwSel(selector) {
   return parts[parts.length - 1];
 }
 
-// iframe 内のステップは page.frameLocator(...) を連ねたスコープから辿る
+// 書き出すコードには1本しか書けないため、候補の中から CSS として使える先頭を選ぶ。
+// 表示テキスト表記（tag:text("...")）は CSS ではないので避ける。
+function primarySelector(step) {
+  if (typeof step.selector === 'string' && step.selector) return step.selector;
+  const list = Array.isArray(step.selectors) ? step.selectors : [];
+  return list.find((sel) => !/^[a-zA-Z][\w-]*:text\(/.test(sel)) || list[0] || '';
+}
+
+// フレーム内（<iframe> / frameset の <frame>）のステップは
+// page.frameLocator(...) を連ねたスコープから辿る
 function pwScope(step) {
   if (!step.frames || !step.frames.length) return 'page';
   const parts = step.frames.map((f) =>
-    typeof f === 'string' ? `.frameLocator(${jsStr(f)})` : `/* 特定できない iframe: ${f.url} */`
+    typeof f === 'string' ? `.frameLocator(${jsStr(f)})` : `/* 特定できないフレーム: ${f.url} */`
   );
   return 'page' + parts.join('');
 }
@@ -339,7 +367,8 @@ function playwrightBody(rec, ind) {
   const lines = [];
   lines.push(`${ind}await page.goto(${val(rec.startUrl)});`);
 
-  for (const step of rec.steps) {
+  for (let step of rec.steps) {
+    step = { ...step, selector: primarySelector(step) };
     const scope = pwScope(step);
     if (step.disabled) {
       lines.push(`${ind}// [無効化] ${stepSummary(step)}`);
@@ -361,6 +390,19 @@ function playwrightBody(rec, ind) {
             Number.isFinite(step.timeoutMs) ? `{ timeout: ${step.timeoutMs} }` : ''
           });`
         );
+        break;
+      case 'assertText':
+        lines.push(
+          `${ind}await expect(${scope}.locator(${jsStr(pwSel(step.selector))})).${
+            step.match === 'equals' ? 'toHaveText' : 'toContainText'
+          }(${val(step.value)});`
+        );
+        break;
+      case 'assertVisible':
+        lines.push(`${ind}await expect(${scope}.locator(${jsStr(pwSel(step.selector))})).toBeVisible();`);
+        break;
+      case 'assertMissing':
+        lines.push(`${ind}await expect(${scope}.locator(${jsStr(pwSel(step.selector))})).toHaveCount(0);`);
         break;
       case 'click':
         lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).click();`);
@@ -475,7 +517,8 @@ function puppeteerBody(rec, ind) {
   lines.push(`${ind}await page.goto(${val(rec.startUrl)});`);
 
   let scopeVarCounter = 0;
-  for (const step of rec.steps) {
+  for (let step of rec.steps) {
+    step = { ...step, selector: primarySelector(step) };
     if (step.disabled) {
       lines.push(`${ind}// [無効化] ${stepSummary(step)}`);
       continue;
@@ -483,14 +526,14 @@ function puppeteerBody(rec, ind) {
     if (Number.isFinite(step.waitBeforeMs) && step.waitBeforeMs > 0) {
       lines.push(`${ind}await new Promise((r) => setTimeout(r, ${step.waitBeforeMs}));`);
     }
-    // iframe 内のステップは、その都度フレームハンドルを解決してから操作する
+    // フレーム内のステップは、その都度フレームハンドルを解決してから操作する
     let scope = 'page';
     if (step.frames && step.frames.length) {
       const v = `frame${++scopeVarCounter}`;
       lines.push(`${ind}let ${v} = page;`);
       for (const f of step.frames) {
         if (typeof f !== 'string') {
-          lines.push(`${ind}// 特定できない iframe: ${f.url}`);
+          lines.push(`${ind}// 特定できないフレーム: ${f.url}`);
           continue;
         }
         lines.push(`${ind}${v} = await (await ${v}.waitForSelector(${jsStr(f)})).contentFrame();`);
@@ -511,6 +554,20 @@ function puppeteerBody(rec, ind) {
             Number.isFinite(step.timeoutMs) ? `, { timeout: ${step.timeoutMs} }` : ''
           });`
         );
+        break;
+      case 'assertText': {
+        const v = `text${++scopeVarCounter}`;
+        lines.push(`${ind}const ${v} = await ${scope}.$eval(${jsStr(step.selector)}, (el) => el.innerText || el.value || '');`);
+        lines.push(
+          `${ind}if (${step.match === 'equals' ? `${v}.trim() !== ${val(step.value)}` : `!${v}.includes(${val(step.value)})`}) throw new Error('assertText failed: ' + ${v});`
+        );
+        break;
+      }
+      case 'assertVisible':
+        lines.push(`${ind}await ${scope}.waitForSelector(${jsStr(step.selector)}, { visible: true });`);
+        break;
+      case 'assertMissing':
+        lines.push(`${ind}await ${scope}.waitForSelector(${jsStr(step.selector)}, { hidden: true });`);
         break;
       case 'click':
         lines.push(`${ind}await ${scope}.click(${jsStr(step.selector)});`);
@@ -648,6 +705,17 @@ export function stepSummary(step) {
       return t('step.wait', { ms: Number.isFinite(step.ms) ? step.ms : 1000 });
     case 'waitForSelector':
       return t('step.waitForSelector', { selector: step.selector }) + inFrame;
+    case 'assertText':
+      return (
+        t(step.match === 'equals' ? 'step.assertTextEquals' : 'step.assertTextContains', {
+          selector: step.selector,
+          value: step.value,
+        }) + inFrame
+      );
+    case 'assertVisible':
+      return t('step.assertVisible', { selector: step.selector }) + inFrame;
+    case 'assertMissing':
+      return t('step.assertMissing', { selector: step.selector }) + inFrame;
     case 'dblclick':
       return t('step.dblclick', { text: step.text ? `"${step.text}" ` : '', selector: step.selector }) + inFrame;
     case 'contextmenu':

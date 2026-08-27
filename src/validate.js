@@ -37,7 +37,11 @@ function valueStrings(step) {
   return out;
 }
 
+// 表示テキストで指す独自表記（例: a:text("受信箱")）。CSS ではないので構文チェックの対象外
+const TEXT_SELECTOR_RE = /^([a-zA-Z][\w-]*):text\("([\s\S]*)"\)$/;
+
 function isValidSelector(sel) {
+  if (TEXT_SELECTOR_RE.test(sel)) return true;
   if (typeof document === 'undefined') return true; // DOM の無い環境では判定しない
   // shadow DOM を跨ぐセレクタは " >>> " 区切り。区間ごとに構文を見る。
   for (const segment of String(sel).split(' >>> ')) {
@@ -96,6 +100,36 @@ export function validateRecording(rec) {
     }
     if (step.type === 'dragAndDrop' && typeof step.toSelector === 'string' && !isValidSelector(step.toSelector)) {
       issues.push(issue('error', 'bad-selector', t('v.badToSelector', { at, selector: step.toSelector }), i));
+    }
+
+    // 代替セレクタ（候補）
+    if (step.selectors !== undefined) {
+      if (!Array.isArray(step.selectors) || !step.selectors.length) {
+        issues.push(issue('error', 'bad-selectors', t('v.badSelectors', { at }), i));
+      } else {
+        const usable = step.selectors.filter((sel) => typeof sel === 'string' && sel && isValidSelector(sel));
+        if (!usable.length) {
+          issues.push(issue('error', 'bad-selectors', t('v.allSelectorsBad', { at }), i));
+        } else if (usable.length < step.selectors.length) {
+          issues.push(issue('warning', 'some-selectors-bad', t('v.someSelectorsBad', { at }), i));
+        }
+      }
+    }
+
+    // 検証ステップ
+    if (step.type === 'assertText' || step.type === 'assertVisible' || step.type === 'assertMissing') {
+      const hasTarget =
+        (typeof step.selector === 'string' && step.selector) ||
+        (Array.isArray(step.selectors) && step.selectors.length);
+      if (!hasTarget) {
+        issues.push(issue('error', 'assert-no-selector', t('v.assertNoSelector', { at }), i));
+      }
+      if (step.type === 'assertText' && !String(step.value == null ? '' : step.value).trim()) {
+        issues.push(issue('error', 'assert-no-value', t('v.assertNoValue', { at }), i));
+      }
+      if (step.type === 'assertText' && step.match !== undefined && !['equals', 'contains'].includes(step.match)) {
+        issues.push(issue('error', 'assert-bad-match', t('v.assertBadMatch', { at }), i));
+      }
     }
 
     // 数値項目

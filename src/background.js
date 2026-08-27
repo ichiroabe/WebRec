@@ -4,9 +4,10 @@
 // - 完了した録画を IndexedDB へ保存
 // - 保存済み録画の再生（リプレイ）
 
-import { saveRecording, getRecording, saveFile, getFile } from './db.js';
+import { saveRecording, getRecording, saveFile, getFile, saveRun, pruneRuns } from './db.js';
 import { getSettings, effectiveSettings, nextSeq } from './settings.js';
 import { resolveStepTemplates, resolveStepTotp } from './template.js';
+import { stepSummary } from './generator.js';
 import { initI18n, t, getLang } from './i18n.js';
 
 // service worker が起きたら文言を確定させておく
@@ -264,16 +265,12 @@ async function waitForTabComplete(tabId, timeoutMs = 30000) {
 function performStepInPage(step) {
   const MSG = step.__msg || {}; // 呼び出し元が渡さなかった場合でも落ちないように
 
-  function cssEscape(str) {
-    if (window.CSS && CSS.escape) return CSS.escape(str);
-    return String(str).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c);
-  }
-
-  // content.js の getFrameChain と同じ規則でこのフレームの位置を求める
-  function getFrameChain() {
+  // 最上位から自フレームまでの frameElement を並べる（読めない区間があれば opaque）
+  function myFrameElements() {
     const chain = [];
     let win = window;
-    while (win !== window.top) {
+    let opaque = false;
+    for (let guard = 0; guard < 20 && win !== window.top; guard++) {
       let frameEl = null;
       try {
         frameEl = win.frameElement;
@@ -281,34 +278,133 @@ function performStepInPage(step) {
         frameEl = null;
       }
       if (!frameEl) {
-        chain.unshift({ unresolved: true, url: win.location.href });
+        opaque = true; // クロスオリジンの親。ここから上は辿れない
         break;
       }
-      const parentDoc = frameEl.ownerDocument;
-      let sel = null;
-      for (const attr of ['data-testid', 'id', 'name']) {
-        const v = frameEl.getAttribute(attr);
-        if (v) {
-          const candidate = attr === 'id' ? `#${cssEscape(v)}` : `iframe[${attr}="${cssEscape(v)}"]`;
-          if (parentDoc.querySelectorAll(candidate).length === 1) {
-            sel = candidate;
-            break;
-          }
-        }
-      }
-      if (!sel) {
-        const all = Array.from(parentDoc.querySelectorAll('iframe'));
-        sel = `iframe:nth-of-type(${all.indexOf(frameEl) + 1})`;
-      }
-      chain.unshift(sel);
+      chain.unshift(frameEl);
       win = win.parent;
     }
-    return chain;
+    return { chain, opaque };
   }
 
-  const myChain = JSON.stringify(getFrameChain());
-  const wantChain = JSON.stringify(step.frames || []);
-  if (myChain !== wantChain) return { matched: false };
+  // 記録された frames が「このフレーム」を指しているかを判定する。
+  // 記録時と同じ文字列を作り直して比較するのではなく、実際の frameElement に
+  // セレクタを当てて確かめる。こうすると <frame>（frameset）でも効くうえ、
+  // 記録側の生成規則が変わっても同じフレームなら一致させられる。
+  //   'exact' … セレクタが自分の祖先フレームに一致した
+  //   'loose' … 記録が古い/解決できない。要素の有無で引き受けるか決める
+  //   'none'  … 別のフレーム
+  function frameMatchLevel(want) {
+    const { chain, opaque } = myFrameElements();
+    if (!want.length) return chain.length === 0 ? 'exact' : 'none';
+    if (opaque || want.some((w) => typeof w !== 'string')) return 'loose';
+    if (chain.length !== want.length) return 'none';
+
+    let unresolvable = false;
+    for (let i = 0; i < want.length; i++) {
+      const el = chain[i];
+      let hit = false;
+      try {
+        hit = el.matches(want[i]);
+      } catch (_) {
+        unresolvable = true; // 不正なセレクタ（旧版の iframe:nth-of-type(0) など）
+        continue;
+      }
+      if (hit) continue;
+      // そのセレクタがそもそも誰も指していないなら、記録が古いだけとみなす
+      let other = null;
+      try {
+        other = el.ownerDocument.querySelector(want[i]);
+      } catch (_) {
+        other = null;
+      }
+      if (other) return 'none'; // 実在する別フレームを指している
+      unresolvable = true;
+    }
+    return unresolvable ? 'loose' : 'exact';
+  }
+
+  // 表示テキストで要素を指す独自表記。例: a:text("受信箱")
+  const TEXT_SELECTOR_RE = /^([a-zA-Z][\w-]*):text\("([\s\S]*)"\)$/;
+
+  // タグ名と表示テキストから要素を探す。
+  // 候補がちょうど 1 つのときだけ採用し、取り違えを避ける。
+  function findByLabel(tag, text) {
+    const want = String(text || '').trim();
+    if (!want || !tag) return null;
+    let nodes;
+    try {
+      nodes = Array.from(document.querySelectorAll(tag));
+    } catch (_) {
+      return null;
+    }
+    const hits = nodes.filter((el) => {
+      const t = (el.innerText || el.getAttribute('aria-label') || '').trim();
+      // 記録時に 60 文字で切っているため、前方一致も許す
+      return t === want || (want.length >= 3 && t.startsWith(want));
+    });
+    return hits.length === 1 ? hits[0] : null;
+  }
+
+  // 記録された候補セレクタ。古い録画には selector しか無いのでそれを1本の候補として扱う
+  function candidatesOf(target) {
+    const list =
+      Array.isArray(target.selectors) && target.selectors.length ? target.selectors : [target.selector];
+    return list.filter((sel) => typeof sel === 'string' && sel);
+  }
+
+  // 構文として使える候補か（壊れた候補は黙って飛ばし、全滅したときだけエラーにする）
+  function selectorUsable(sel) {
+    if (TEXT_SELECTOR_RE.test(sel)) return true;
+    try {
+      queryDeep(sel);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 候補 1 本を要素に解決する
+  function resolveOne(sel) {
+    const m = TEXT_SELECTOR_RE.exec(sel);
+    // テキスト頼みの指定は最後の試行でだけ使う。
+    // 先に本来のセレクタで見つかるフレーム/要素に譲り、取り違えを避けるため。
+    if (m) return allowFallback ? findByLabel(m[1], m[2].replace(/\\"/g, '"')) : null;
+    try {
+      return queryDeep(sel);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // 候補を上から順に試す
+  function resolveAny(cands) {
+    for (let i = 0; i < cands.length; i++) {
+      const el = resolveOne(cands[i]);
+      if (el) return { el, index: i, selector: cands[i] };
+    }
+    return null;
+  }
+
+  const allowFallback = !!step.__allowTextFallback;
+  let usedFallback = null; // 先頭以外の候補で見つけた場合、その候補を控えておく
+  const done = (extra) => ({ matched: true, fallback: usedFallback, ...(extra || {}) });
+
+  const level = frameMatchLevel(step.frames || []);
+  if (level === 'none') return { matched: false };
+  if (level === 'loose') {
+    // フレームを特定しきれないケース。対象要素を持たないフレームまで実行すると、
+    // 要素待ちのタイムアウトでステップ全体が失敗してしまうので、
+    // 「今このフレームに対象がある」ものだけが引き受ける。
+    // assertMissing は「無いこと」を確かめるステップなので、この判定には掛けられない。
+    const cands = candidatesOf(step).filter(selectorUsable);
+    if (cands.length && step.type !== 'assertMissing') {
+      if (!resolveAny(cands)) return { matched: false };
+    } else if (myFrameElements().chain.length !== (step.frames || []).length) {
+      // scroll など対象要素を持たないステップは、深さが同じフレームだけに任せる
+      return { matched: false };
+    }
+  }
 
   // ステップ個別の timeoutMs があればそれを優先する
   const elementTimeout = Number.isFinite(step.timeoutMs) ? step.timeoutMs : step.__elementTimeoutMs || 8000;
@@ -330,19 +426,24 @@ function performStepInPage(step) {
     return el;
   }
 
-  function findEl(selector, timeoutMs) {
+  // target は step そのもの（selector / selectors を持つオブジェクト）。
+  // 候補を上から試し、先頭以外で見つかった場合はその旨を記録する。
+  function findEl(target, timeoutMs) {
+    const all = candidatesOf(target);
+    const cands = all.filter(selectorUsable);
     return new Promise((resolve, reject) => {
+      if (!cands.length) {
+        return reject(new Error((MSG.badSelector || '') + (all[0] || '')));
+      }
       const start = Date.now();
       (function poll() {
-        let el = null;
-        try {
-          el = queryDeep(selector);
-        } catch (e) {
-          return reject(new Error((MSG.badSelector || '') + selector));
+        const hit = resolveAny(cands);
+        if (hit) {
+          if (hit.index > 0) usedFallback = hit.selector;
+          return resolve(hit.el);
         }
-        if (el) return resolve(el);
         if (Date.now() - start > timeoutMs) {
-          return reject(new Error((MSG.notFound || '') + selector));
+          return reject(new Error((MSG.notFound || '') + cands[0]));
         }
         setTimeout(poll, 150);
       })();
@@ -393,12 +494,44 @@ function performStepInPage(step) {
 
   return (async () => {
     if (step.type === 'waitForSelector') {
-      await findEl(step.selector, elementTimeout);
-      return { matched: true };
+      await findEl(step, elementTimeout);
+      return done();
+    }
+
+    // --- 検証ステップ ---
+    // 期待どおりの画面になっているかを確かめ、違えば止める。
+    // 削除など取り返しのつかない操作の前後に置くために用意している。
+    // 文言の組み立ては呼び出し元（background）に任せ、ここでは事実だけ返す。
+    if (step.type === 'assertText') {
+      const el = await findEl(step, elementTimeout);
+      const actual = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+      const expected = String(step.value == null ? '' : step.value).trim();
+      const ok = step.match === 'equals' ? actual === expected : actual.includes(expected);
+      return done(ok ? null : { assertFailed: { kind: 'text', expected, actual: actual.slice(0, 200) } });
+    }
+
+    if (step.type === 'assertVisible') {
+      const el = await findEl(step, elementTimeout);
+      const style = window.getComputedStyle(el);
+      const visible =
+        el.getClientRects().length > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      return done(visible ? null : { assertFailed: { kind: 'visible', selector: candidatesOf(step)[0] } });
+    }
+
+    if (step.type === 'assertMissing') {
+      const cands = candidatesOf(step).filter(selectorUsable);
+      const start = Date.now();
+      for (;;) {
+        if (!resolveAny(cands)) return done(); // 消えた/元から無い
+        if (Date.now() - start > elementTimeout) {
+          return done({ assertFailed: { kind: 'missing', selector: cands[0] } });
+        }
+        await new Promise((r) => setTimeout(r, 150));
+      }
     }
 
     if (step.type === 'upload') {
-      const input = await findEl(step.selector, elementTimeout);
+      const input = await findEl(step, elementTimeout);
       const dt = new DataTransfer();
       for (const f of step.files || []) {
         if (!f.dataUrl) throw new Error((MSG.fileMissing || '') + f.name);
@@ -407,16 +540,16 @@ function performStepInPage(step) {
       input.files = dt.files;
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      return { matched: true };
+      return done();
     }
 
     // ウィンドウ全体のスクロールは対象要素を持たない
     if (step.type === 'scroll' && !step.selector) {
       window.scrollTo({ left: step.x || 0, top: step.y || 0, behavior: 'instant' });
-      return { matched: true };
+      return done();
     }
 
-    const el = await findEl(step.selector, elementTimeout);
+    const el = await findEl(step, elementTimeout);
     if (step.type !== 'scroll') el.scrollIntoView({ block: 'center', inline: 'center' });
 
     if (step.type === 'click') {
@@ -442,7 +575,7 @@ function performStepInPage(step) {
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     } else if (step.type === 'dragAndDrop') {
-      const to = await findEl(step.toSelector, 8000);
+      const to = await findEl({ selector: step.toSelector, selectors: step.toSelectors }, 8000);
       fireDragSequence(el, to);
     } else if (step.type === 'keydown') {
       el.focus();
@@ -510,7 +643,7 @@ function performStepInPage(step) {
         window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: ex, clientY: ey }));
       }
     }
-    return { matched: true };
+    return done();
   })();
 }
 
@@ -545,6 +678,38 @@ async function stubDialogs(tabId) {
   } catch (err) {
     console.warn('WebRec: failed to stub dialogs', err);
   }
+}
+
+// ダイアログ差し替えはドキュメント単位なので、遷移やフレームの読み込み直しで消える。
+// frameset のように一部のフレームだけが読み込み直されるサイトでは、
+// これを入れ直さないと confirm() でページごと止まってしまう。
+let dialogGuardListener = null;
+
+function startDialogGuard(getTabId) {
+  stopDialogGuard();
+  dialogGuardListener = (details) => {
+    if (details.tabId !== getTabId()) return;
+    chrome.scripting
+      .executeScript({
+        target: { tabId: details.tabId, frameIds: [details.frameId] },
+        world: 'MAIN',
+        func: installDialogStubs,
+      })
+      .catch(() => {
+        /* 遷移直後で注入できないことがある。次のステップの待ちで吸収される */
+      });
+  };
+  chrome.webNavigation.onCommitted.addListener(dialogGuardListener);
+}
+
+function stopDialogGuard() {
+  if (!dialogGuardListener) return;
+  try {
+    chrome.webNavigation.onCommitted.removeListener(dialogGuardListener);
+  } catch (_) {
+    /* noop */
+  }
+  dialogGuardListener = null;
 }
 
 // 再生中にクリックで新しいタブが開いた場合、そのタブを掴み直す
@@ -603,6 +768,8 @@ async function executeStepWithRetry(tabId, step, cfg) {
           {
             ...ready,
             __elementTimeoutMs: cfg.elementTimeoutMs,
+            // セレクタが当たらないときのテキスト頼みの探索は、最後の試行でだけ有効にする
+            __allowTextFallback: attempt === cfg.injectRetries - 1,
             // 注入される関数からは t() を呼べないため、文言を渡しておく
             __msg: {
               badSelector: t('bg.badSelectorPrefix'),
@@ -612,7 +779,8 @@ async function executeStepWithRetry(tabId, step, cfg) {
           },
         ],
       });
-      if (results.some((r) => r.result && r.result.matched)) return;
+      const hit = results.find((r) => r.result && r.result.matched);
+      if (hit) return hit.result;
       lastErr = new Error(t('bg.frameNotFound'));
     } catch (err) {
       lastErr = err;
@@ -622,7 +790,145 @@ async function executeStepWithRetry(tabId, step, cfg) {
   throw lastErr || new Error(t('bg.stepFailed'));
 }
 
-async function replayRecording(id, onProgress) {
+// --- 実行ログ ---
+// 再生 1 回ぶんを 1 レコードとして残す。進捗が出るたびに上書き保存するので、
+// 途中で Service Worker が止まっても、そこまでの経過は残る。
+
+let currentRun = null;
+let runSaveTimer = null;
+
+function beginRun(rec, opts, rowCount) {
+  currentRun = {
+    id: crypto.randomUUID(),
+    recordingId: rec.id,
+    name: rec.name,
+    trigger: opts.trigger === 'schedule' ? 'schedule' : 'manual',
+    startedAt: Date.now(),
+    finishedAt: null,
+    status: 'running',
+    rowCount,
+    options: {
+      tabId: opts.tabId ?? null,
+      keepCurrentUrl: !!opts.keepCurrentUrl,
+      startAtIndex: Number.isFinite(opts.startAtIndex) ? opts.startAtIndex : 0,
+    },
+    steps: [],
+    dialogs: [],
+    error: null,
+  };
+  return flushRun(true);
+}
+
+// 保存は 1 秒に 1 回までに間引く（ステップごとに書くと IndexedDB が忙しくなる）
+function flushRun(immediate) {
+  if (!currentRun) return Promise.resolve();
+  if (runSaveTimer) {
+    clearTimeout(runSaveTimer);
+    runSaveTimer = null;
+  }
+  if (immediate) return saveRun({ ...currentRun }).catch(() => {});
+  runSaveTimer = setTimeout(() => {
+    runSaveTimer = null;
+    if (currentRun) saveRun({ ...currentRun }).catch(() => {});
+  }, 1000);
+  return Promise.resolve();
+}
+
+function logProgress(progress) {
+  if (!currentRun) return;
+  if (progress.marker === 'row' || progress.status === 'running' || progress.status === 'complete') return;
+  currentRun.steps.push({
+    rowIndex: progress.rowIndex || 0,
+    index: progress.index,
+    type: progress.step && progress.step.type,
+    summary: progress.step ? safeSummary(progress.step) : '',
+    status: progress.status,
+    error: progress.error || null,
+    fallback: progress.fallback || null,
+    at: Date.now(),
+  });
+  flushRun(false);
+}
+
+function safeSummary(step) {
+  try {
+    return stepSummary(step);
+  } catch (_) {
+    return step.type || '';
+  }
+}
+
+// 検証ステップの失敗を、利用者に読める文言にする
+function assertMessage(info) {
+  if (info.kind === 'text') return t('bg.assertTextFailed', { expected: info.expected, actual: info.actual });
+  if (info.kind === 'visible') return t('bg.assertNotVisible', { selector: info.selector });
+  return t('bg.assertStillThere', { selector: info.selector });
+}
+
+let lastFinishedRun = null;
+
+async function finishRun(status, error) {
+  if (!currentRun) return null;
+  const failed = currentRun.steps.filter((s) => s.status === 'error').length;
+  currentRun.finishedAt = Date.now();
+  currentRun.failedCount = failed;
+  currentRun.status = status === 'done' && failed ? 'failed' : status;
+  if (error) currentRun.error = error;
+  const finished = currentRun;
+  await flushRun(true);
+  lastFinishedRun = finished;
+  currentRun = null;
+  pruneRuns().catch(() => {});
+  return finished;
+}
+
+// 再生中に出た alert / confirm / prompt を回収する（差し替え側が溜めている）
+async function collectDialogs(tabId, stepIndex) {
+  if (!currentRun) return;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: 'MAIN',
+      func: () => {
+        const list = window.__webrecDialogs || [];
+        window.__webrecDialogs = [];
+        return list;
+      },
+    });
+    for (const r of results) {
+      for (const d of Array.isArray(r.result) ? r.result : []) {
+        currentRun.dialogs.push({ ...d, stepIndex, at: Date.now() });
+      }
+    }
+  } catch (_) {
+    /* 遷移直後などで読めないことがある。ログが欠けるだけなので握りつぶす */
+  }
+}
+
+// opts:
+//   tabId          … 既に開いているタブで再生する（ログイン済みの画面などを引き継ぐ）
+//   keepCurrentUrl … 開始URLへ移動せず、今表示しているページから始める
+//   startAtIndex   … 途中のステップから始める（手で済ませた前半を飛ばす）
+// 同時に 2 本走らせると、同じタブを取り合って壊れる
+let replayBusy = false;
+
+async function replayRecording(id, onProgress, opts = {}) {
+  if (replayBusy) throw new Error(t('bg.replayBusy'));
+  replayBusy = true;
+  try {
+    const result = await runReplay(id, onProgress, opts);
+    await finishRun('done');
+    return result;
+  } catch (err) {
+    await finishRun('error', String(err && err.message ? err.message : err));
+    throw err;
+  } finally {
+    replayBusy = false;
+    stopDialogGuard();
+  }
+}
+
+async function runReplay(id, onProgress, opts) {
   const rec = await getRecording(id);
   if (!rec) throw new Error(t('bg.recordingNotFound'));
 
@@ -639,11 +945,39 @@ async function replayRecording(id, onProgress) {
   const firstCtx = { ...baseCtx, data: rows[0], row: 1 };
   const firstUrl = resolveStepTemplates({ url: rec.startUrl }, firstCtx).url;
 
-  // 管理画面(進捗リスト)を見ながらでも再生の様子が隠れないよう、別ウィンドウで開く
-  const win = await chrome.windows.create({ url: firstUrl, focused: true });
-  let tab = win.tabs[0]; // newTab ステップで別のタブに乗り換えることがある
+  const keepUrl = !!opts.keepCurrentUrl;
+  const startAt = Number.isFinite(opts.startAtIndex) ? Math.max(0, opts.startAtIndex) : 0;
+
+  await beginRun(rec, opts, rows.length);
+  // 進捗は画面と実行ログの両方へ流す
+  const report = (progress) => {
+    logProgress(progress);
+    onProgress(progress);
+  };
+
+  let tab; // newTab ステップで別のタブに乗り換えることがある
+  if (opts.tabId != null) {
+    // 利用者が用意したタブ（ログイン済み、目的の画面を開いた状態など）をそのまま使う
+    tab = await chrome.tabs.get(opts.tabId);
+    try {
+      await chrome.windows.update(tab.windowId, { focused: true });
+      await chrome.tabs.update(tab.id, { active: true });
+    } catch (_) {
+      /* ウィンドウ操作に失敗しても再生自体は続行できる */
+    }
+    if (!keepUrl) {
+      await chrome.tabs.update(tab.id, { url: firstUrl });
+      await sleep(200);
+    }
+  } else {
+    // 管理画面(進捗リスト)を見ながらでも再生の様子が隠れないよう、別ウィンドウで開く
+    const win = await chrome.windows.create({ url: firstUrl, focused: true });
+    tab = win.tabs[0];
+  }
   await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
   await stubDialogs(tab.id); // ダイアログで止まらないようにしておく
+  // 遷移のたびにダイアログ抑止を入れ直す（フレームが読み込み直されると消えるため）
+  startDialogGuard(() => tab.id);
   await sleep(300);
 
   const total = rec.steps.length;
@@ -652,10 +986,11 @@ async function replayRecording(id, onProgress) {
     const tplCtx = { ...baseCtx, data: rows[r], row: r + 1 };
     // marker という別名にしている: port 送信時に { type: 'PROGRESS', ...progress } と
     // 展開されるため、ここで type を使うとメッセージ種別を上書きしてしまう。
-    onProgress({ marker: 'row', rowIndex: r, rowCount: rows.length, data: rows[r], status: 'running' });
+    report({ marker: 'row', rowIndex: r, rowCount: rows.length, data: rows[r], status: 'running' });
 
     // 2行目以降は開始URLに戻してからシナリオをやり直す
-    if (r > 0) {
+    // （現在のページから始める指定のときは、状態を壊さないよう触らない）
+    if (r > 0 && !keepUrl) {
       const startUrl = resolveStepTemplates({ url: rec.startUrl }, tplCtx).url;
       await chrome.tabs.update(tab.id, { url: startUrl });
       await sleep(200);
@@ -667,10 +1002,11 @@ async function replayRecording(id, onProgress) {
     for (let i = 0; i < total; i++) {
       const raw = rec.steps[i];
 
-      // 無効化されたステップ、および旧バージョンで誤って記録された WebRec 自身のUI操作は飛ばす
+      // 無効化されたステップ、開始位置より前のステップ、および
+      // 旧バージョンで誤って記録された WebRec 自身のUI操作は飛ばす
       const isOwnUi = typeof raw.selector === 'string' && raw.selector.includes('__webrec_overlay__');
-      if (raw.disabled || isOwnUi) {
-        onProgress({ rowIndex: r, index: i, total, step: raw, status: 'skipped' });
+      if (raw.disabled || isOwnUi || i < startAt) {
+        report({ rowIndex: r, index: i, total, step: raw, status: 'skipped' });
         continue;
       }
 
@@ -678,7 +1014,8 @@ async function replayRecording(id, onProgress) {
       // {{totp:...}} は毎回その場で計算する必要があり、Web Crypto が非同期なので別経路。
       const step = await resolveStepTotp(resolveStepTemplates(raw, tplCtx), tplCtx);
 
-      onProgress({ rowIndex: r, index: i, total, step, status: 'running' });
+      report({ rowIndex: r, index: i, total, step, status: 'running' });
+      let outcome = null;
       try {
         // ステップ個別の事前待機（重い処理の後などに JSON へ手で足せる）
         if (Number.isFinite(step.waitBeforeMs) && step.waitBeforeMs > 0) {
@@ -710,13 +1047,22 @@ async function replayRecording(id, onProgress) {
           await stubDialogs(tab.id);
           await chrome.tabs.update(tab.id, { active: true });
         } else {
-          await executeStepWithRetry(tab.id, step, cfg);
+          outcome = await executeStepWithRetry(tab.id, step, cfg);
+          await collectDialogs(tab.id, i);
+          if (outcome && outcome.assertFailed) throw new Error(assertMessage(outcome.assertFailed));
         }
-        onProgress({ rowIndex: r, index: i, total, step, status: 'done' });
+        report({
+          rowIndex: r,
+          index: i,
+          total,
+          step,
+          status: 'done',
+          fallback: outcome && outcome.fallback ? outcome.fallback : null,
+        });
       } catch (err) {
         const message = String(err && err.message ? err.message : err);
         // optional 指定のステップは、失敗しても警告扱いにして続行する
-        onProgress({
+        report({
           rowIndex: r,
           index: i,
           total,
@@ -728,11 +1074,116 @@ async function replayRecording(id, onProgress) {
       await sleep(cfg.stepIntervalMs);
     }
 
-    onProgress({ marker: 'row', rowIndex: r, rowCount: rows.length, data: rows[r], status: 'done' });
+    report({ marker: 'row', rowIndex: r, rowCount: rows.length, data: rows[r], status: 'done' });
   }
 
-  onProgress({ index: total, total, status: 'complete' });
+  report({ index: total, total, status: 'complete' });
 }
+
+// --- スケジュール実行 ---
+// chrome.alarms で定期的に再生する。ブラウザが起動している間だけ動く。
+// 予定は chrome.storage.local に持ち、変更のたびにアラームを作り直す。
+
+const SCHEDULE_KEY = 'webrec_schedules';
+const ALARM_PREFIX = 'webrec-run:';
+
+async function getSchedules() {
+  try {
+    const data = await chrome.storage.local.get(SCHEDULE_KEY);
+    const list = data && data[SCHEDULE_KEY];
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function setSchedules(list) {
+  const clean = (Array.isArray(list) ? list : []).map((sc) => ({
+    id: sc.id || crypto.randomUUID(),
+    recordingId: String(sc.recordingId || ''),
+    kind: sc.kind === 'interval' ? 'interval' : 'daily',
+    at: typeof sc.at === 'string' && /^\d{1,2}:\d{2}$/.test(sc.at) ? sc.at : '09:00',
+    everyMinutes: Math.max(1, Math.round(Number(sc.everyMinutes) || 60)),
+    enabled: sc.enabled !== false,
+    lastRunAt: sc.lastRunAt || null,
+    lastStatus: sc.lastStatus || null,
+    lastRunId: sc.lastRunId || null,
+  }));
+  await chrome.storage.local.set({ [SCHEDULE_KEY]: clean });
+  await syncAlarms(clean);
+  return clean;
+}
+
+// 次に "HH:MM" が来る時刻（今日の分を過ぎていれば明日）
+function nextDailyTime(hhmm) {
+  const [h, m] = String(hhmm || '09:00')
+    .split(':')
+    .map((v) => Number(v));
+  const next = new Date();
+  next.setHours(Number.isFinite(h) ? h : 9, Number.isFinite(m) ? m : 0, 0, 0);
+  if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
+  return next.getTime();
+}
+
+async function syncAlarms(list) {
+  const schedules = list || (await getSchedules());
+  const existing = await chrome.alarms.getAll();
+  for (const alarm of existing) {
+    if (alarm.name.startsWith(ALARM_PREFIX)) await chrome.alarms.clear(alarm.name);
+  }
+  for (const sc of schedules) {
+    if (!sc.enabled || !sc.recordingId) continue;
+    if (sc.kind === 'interval') {
+      const mins = Math.max(1, sc.everyMinutes);
+      chrome.alarms.create(ALARM_PREFIX + sc.id, { delayInMinutes: mins, periodInMinutes: mins });
+    } else {
+      chrome.alarms.create(ALARM_PREFIX + sc.id, { when: nextDailyTime(sc.at), periodInMinutes: 24 * 60 });
+    }
+  }
+}
+
+async function runScheduled(scheduleId) {
+  await i18nReady;
+  const list = await getSchedules();
+  const sc = list.find((item) => item.id === scheduleId);
+  if (!sc || !sc.enabled) return;
+
+  lastFinishedRun = null;
+  try {
+    // 予定実行では画面の用意ができないため、常に新しいウィンドウで開始URLから流す
+    await replayRecording(sc.recordingId, () => {}, { trigger: 'schedule' });
+  } catch (err) {
+    console.warn('WebRec: scheduled run failed', err);
+  }
+  const run = lastFinishedRun;
+  await setSchedules(
+    list.map((item) =>
+      item.id === scheduleId
+        ? {
+            ...item,
+            lastRunAt: Date.now(),
+            lastStatus: run ? run.status : 'error',
+            lastRunId: run ? run.id : null,
+          }
+        : item
+    )
+  );
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (!alarm.name.startsWith(ALARM_PREFIX)) return;
+  runScheduled(alarm.name.slice(ALARM_PREFIX.length)).catch((err) =>
+    console.warn('WebRec: schedule error', err)
+  );
+});
+
+// 拡張機能の更新やブラウザ再起動でアラームが失われることがあるので張り直す
+chrome.runtime.onStartup.addListener(() => {
+  syncAlarms().catch(() => {});
+});
+chrome.runtime.onInstalled.addListener(() => {
+  syncAlarms().catch(() => {});
+});
 
 // --- メッセージルーティング ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -751,6 +1202,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         case 'STOP_RECORDING': {
           sendResponse(await stopRecording());
+          break;
+        }
+        case 'GET_SCHEDULES': {
+          sendResponse({ ok: true, schedules: await getSchedules() });
+          break;
+        }
+        case 'SET_SCHEDULES': {
+          sendResponse({ ok: true, schedules: await setSchedules(message.schedules) });
           break;
         }
         case 'RECORD_EVENT': {
@@ -772,13 +1231,21 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'replay') return;
   port.onMessage.addListener((msg) => {
     if (msg.type !== 'START') return;
-    replayRecording(msg.id, (progress) => {
-      try {
-        port.postMessage({ type: 'PROGRESS', ...progress });
-      } catch (_) {
-        /* port may be closed */
+    replayRecording(
+      msg.id,
+      (progress) => {
+        try {
+          port.postMessage({ type: 'PROGRESS', ...progress });
+        } catch (_) {
+          /* port may be closed */
+        }
+      },
+      {
+        tabId: Number.isFinite(msg.tabId) ? msg.tabId : null,
+        keepCurrentUrl: !!msg.keepCurrentUrl,
+        startAtIndex: Number.isFinite(msg.startAtIndex) ? msg.startAtIndex : 0,
       }
-    })
+    )
       .then(() => {
         try {
           port.postMessage({ type: 'DONE' });
