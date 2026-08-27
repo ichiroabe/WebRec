@@ -250,23 +250,24 @@ function sleep(ms) {
 // イベントリスナー方式だと「呼び出し時点で既に complete」なケースを取りこぼして
 // タイムアウトまで固まって見えるため、ポーリングで現在の状態を都度確認する。
 // 最上位フレームの DOM が使える状態か（読み込み完了までは待たない）
-async function isDomUsable(tabId) {
+// 最上位フレームの「今の中身」を聞く。
+// injectImmediately を付けないと、executeScript 自体が document_idle
+// （＝読み込み完了）まで待たされる。それでは読み込みを待たないための
+// 判定にならないので、必ず即時注入で聞きに行く。
+async function getDocState(tabId) {
   try {
-    // injectImmediately を付けないと、executeScript 自体が document_idle
-    // （＝読み込み完了）まで待たされる。それでは読み込みを待たないための
-    // 判定にならないので、必ず即時注入で聞きに行く。
     const results = await withTimeout(
       chrome.scripting.executeScript({
         target: { tabId, frameIds: [0] },
-        func: () => document.readyState,
+        func: () => ({ ready: document.readyState, url: location.href }),
         injectImmediately: true,
       }),
       2000
     );
     const res = results && results[0];
-    return !!res && (res.result === 'interactive' || res.result === 'complete');
+    return res && res.result ? res.result : null;
   } catch (_) {
-    return false; // 遷移中などで読めない。次のポーリングで見直す
+    return null; // 遷移中などで読めない。次のポーリングで見直す
   }
 }
 
@@ -281,9 +282,18 @@ async function waitForTabReady(tabId, timeoutMs = 30000) {
   for (;;) {
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) throw new Error(t('bg.tabGone'));
-    if (tab.status === 'complete') return;
     const waited = Date.now() - start;
-    if (waited > DOM_READY_GRACE_MS && (await isDomUsable(tabId))) return;
+
+    if (tab.status === 'complete' || waited > DOM_READY_GRACE_MS) {
+      const doc = await getDocState(tabId);
+      // ウィンドウを開いた直後の about:blank を「準備できた」と見てはいけない。
+      // ここで先へ進むと、すぐ捨てられるドキュメントへ操作を注入してしまい、
+      // 「どのフレームも名乗り出ない」という分かりにくい失敗になる。
+      if (doc && doc.url && doc.url !== 'about:blank' && doc.ready !== 'loading') return;
+      // スクリプトを注入できない種類のページは、従来どおり status で判断する
+      if (!doc && tab.status === 'complete') return;
+    }
+
     if (waited > timeoutMs) throw new Error(t('bg.loadTimeout'));
     await sleep(150);
   }
@@ -380,7 +390,14 @@ function performStepInPage(step) {
   function candidatesOf(target) {
     const list =
       Array.isArray(target.selectors) && target.selectors.length ? target.selectors : [target.selector];
-    return list.filter((sel) => typeof sel === 'string' && sel);
+    const out = list.filter((sel) => typeof sel === 'string' && sel);
+    // 代替セレクタを持たない古い録画のために、記録してある tag と text から
+    // テキスト指定を最後の候補として補う（本来のセレクタが外れたときだけ使われる）
+    const label = typeof target.text === 'string' ? target.text.trim() : '';
+    if (label && target.tag && !out.some((sel) => TEXT_SELECTOR_RE.test(sel))) {
+      out.push(`${target.tag}:text("${label.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}")`);
+    }
+    return out;
   }
 
   // 構文として使える候補か（壊れた候補は黙って飛ばし、全滅したときだけエラーにする）
@@ -827,7 +844,13 @@ async function executeStepWithRetry(tabId, step, cfg) {
       if (!results) throw new Error(t('bg.injectTimeout'));
       const hit = results.find((r) => r.result && r.result.matched);
       if (hit) return hit.result;
-      lastErr = new Error(t('bg.frameNotFound'));
+      // Chrome はフレームごとの失敗を error として返す（呼び出し自体は成功する）。
+      // これを捨てると「対象のフレームが見つかりません」に化けて原因が分からなくなる。
+      const failed = results.find((r) => r.error);
+      const detail = failed && failed.error;
+      lastErr = new Error(
+        detail ? String(detail.message || detail) : t('bg.frameNotFound')
+      );
     } catch (err) {
       lastErr = err;
     }
