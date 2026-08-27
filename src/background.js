@@ -70,6 +70,7 @@ async function ensureContentScript(tabId) {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       files: ['src/content.js'],
+      injectImmediately: true, // 読み込み中のページでも待たされないようにする
     });
     return true;
   } catch (err) {
@@ -251,10 +252,18 @@ function sleep(ms) {
 // 最上位フレームの DOM が使える状態か（読み込み完了までは待たない）
 async function isDomUsable(tabId) {
   try {
-    const [res] = await chrome.scripting.executeScript({
-      target: { tabId, frameIds: [0] },
-      func: () => document.readyState,
-    });
+    // injectImmediately を付けないと、executeScript 自体が document_idle
+    // （＝読み込み完了）まで待たされる。それでは読み込みを待たないための
+    // 判定にならないので、必ず即時注入で聞きに行く。
+    const results = await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        func: () => document.readyState,
+        injectImmediately: true,
+      }),
+      2000
+    );
+    const res = results && results[0];
     return !!res && (res.result === 'interactive' || res.result === 'complete');
   } catch (_) {
     return false; // 遷移中などで読めない。次のポーリングで見直す
@@ -691,11 +700,15 @@ function installDialogStubs() {
 
 async function stubDialogs(tabId) {
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      world: 'MAIN', // ページ自身の window を書き換える必要がある
-      func: installDialogStubs,
-    });
+    await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        world: 'MAIN', // ページ自身の window を書き換える必要がある
+        func: installDialogStubs,
+        injectImmediately: true, // 読み込み完了を待つとダイアログに先を越される
+      }),
+      5000
+    );
   } catch (err) {
     console.warn('WebRec: failed to stub dialogs', err);
   }
@@ -715,6 +728,7 @@ function startDialogGuard(getTabId) {
         target: { tabId: details.tabId, frameIds: [details.frameId] },
         world: 'MAIN',
         func: installDialogStubs,
+        injectImmediately: true,
       })
       .catch(() => {
         /* 遷移直後で注入できないことがある。次のステップの待ちで吸収される */
@@ -777,29 +791,40 @@ async function hydrateFiles(step) {
 // それでも失敗した場合は数回リトライする。
 async function executeStepWithRetry(tabId, step, cfg) {
   const ready = await hydrateFiles(step);
+  // 注入した関数は要素の出現を最大 elementTimeout まで待つ。それに余裕を足した
+  // ところで見切る（executeScript 自体が返ってこない場合の保険）。
+  const injectCap = (Number.isFinite(step.timeoutMs) ? step.timeoutMs : cfg.elementTimeoutMs) + 15000;
   let lastErr = null;
   for (let attempt = 0; attempt < cfg.injectRetries; attempt++) {
     try {
       await waitForTabReady(tabId, cfg.pageLoadTimeoutMs);
-      // iframe 内の操作もありうるため全フレームに注入し、該当フレームだけが実行する
-      const results = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        func: performStepInPage,
-        args: [
-          {
-            ...ready,
-            __elementTimeoutMs: cfg.elementTimeoutMs,
-            // セレクタが当たらないときのテキスト頼みの探索は、最後の試行でだけ有効にする
-            __allowTextFallback: attempt === cfg.injectRetries - 1,
-            // 注入される関数からは t() を呼べないため、文言を渡しておく
-            __msg: {
-              badSelector: t('bg.badSelectorPrefix'),
-              notFound: t('bg.notFoundPrefix'),
-              fileMissing: t('bg.fileMissingPrefix'),
+      // iframe 内の操作もありうるため全フレームに注入し、該当フレームだけが実行する。
+      // injectImmediately を付けないと、広告などを読み込み続けるページでは
+      // executeScript が document_idle（＝読み込み完了）まで返らない。
+      // 要素の出現は注入した関数の側で待つので、ここは待たずに入れてよい。
+      const results = await withTimeout(
+        chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: performStepInPage,
+          injectImmediately: true,
+          args: [
+            {
+              ...ready,
+              __elementTimeoutMs: cfg.elementTimeoutMs,
+              // セレクタが当たらないときのテキスト頼みの探索は、最後の試行でだけ有効にする
+              __allowTextFallback: attempt === cfg.injectRetries - 1,
+              // 注入される関数からは t() を呼べないため、文言を渡しておく
+              __msg: {
+                badSelector: t('bg.badSelectorPrefix'),
+                notFound: t('bg.notFoundPrefix'),
+                fileMissing: t('bg.fileMissingPrefix'),
+              },
             },
-          },
-        ],
-      });
+          ],
+        }),
+        injectCap
+      );
+      if (!results) throw new Error(t('bg.injectTimeout'));
       const hit = results.find((r) => r.result && r.result.matched);
       if (hit) return hit.result;
       lastErr = new Error(t('bg.frameNotFound'));
@@ -930,6 +955,7 @@ async function collectDialogs(tabId, stepIndex) {
       chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
         world: 'MAIN',
+        injectImmediately: true,
         func: () => {
           const list = window.__webrecDialogs || [];
           window.__webrecDialogs = [];
@@ -1079,8 +1105,17 @@ async function runReplay(id, onProgress, opts) {
           if (!current || current.url !== step.url) {
             // 自然遷移で辿り着いていない場合のみ、対象URLへ直接遷移させる。
             // 既に到達している場合に再遷移しないことで、POST 結果画面などを壊さない。
+            const beforeUrl = current ? current.url : '';
             await chrome.tabs.update(tab.id, { url: step.url });
-            await sleep(200); // status が新しいナビゲーションに切り替わるのを少し待つ
+            // 遷移が反映される前に読み込み待ちへ入ると、前のページを
+            // 「読み込み済み」と誤認してしまう。URL が変わるまで少しだけ待つ。
+            const settleUntil = Date.now() + 5000;
+            for (;;) {
+              const now = await chrome.tabs.get(tab.id).catch(() => null);
+              if (!now || now.url !== beforeUrl || now.url === step.url) break;
+              if (Date.now() > settleUntil) break;
+              await sleep(150);
+            }
             await waitForTabReady(tab.id, cfg.pageLoadTimeoutMs);
           }
           await stubDialogs(tab.id); // 遷移で window が入れ替わるので入れ直す
