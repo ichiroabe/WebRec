@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>iframe form</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        margin: 12px;
+        font-size: 13px;
+      }
+      h2 {
+        font-size: 14px;
+        margin: 0 0 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>iframe 内フォーム</h2>
+    <input id="frameText" type="text" placeholder="iframe内テキスト" />
+    <label><input type="checkbox" id="frameCheck" /> iframe内チェック</label>
+    <select id="frameSelect">
+      <option value="">-- 選択 --</option>
+      <option value="x">X</option>
+      <option value="y">Y</option>
+    </select>
+    <button type="button" id="frameBtn">iframe内ボタン</button>
+    <div id="frameLog"></div>
+    <script>
+      document.getElementById('frameBtn').addEventListener('click', () => {
+        document.getElementById('frameLog').textContent = 'iframe内ボタンが押されました';
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Test Page 1</title>
+  </head>
+  <body>
+    <h1>Test Page 1</h1>
+    <button id="myButton">Click Me</button>
+    <input id="myInput" type="text" />
+    <select id="mySelect">
+      <option value="a">A</option>
+      <option value="b">B</option>
+      <option value="c">C</option>
+    </select>
+    <input id="enterField" type="text" placeholder="press enter here" />
+    <a id="gotoPage2" href="page2.html">Go to page 2</a>
+    <script>
+      window.__clicked = false;
+      document.getElementById('myButton').addEventListener('click', () => {
+        window.__clicked = true;
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "webrec",
+  "version": "1.0.0",
+  "private": true,
+  "description": "画面操作を記録して再現する Chrome 拡張機能（テスト用の設定）",
+  "type": "module",
+  "scripts": {
+    "test": "node test/run-all.mjs",
+    "serve": "node test/serve-fixtures.mjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^29.1.1"
+  }
+}

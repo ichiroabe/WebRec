@@ -391,6 +391,45 @@ When something other than the first candidate matched, the progress view and the
 
 `selector` (the single, original field) is written alongside, so older recordings and the script exports keep working.
 
+## Tests
+
+```bash
+npm install
+npm test
+```
+
+22 suites run, each in its own process. Pass part of a name to narrow it down.
+
+```bash
+npm test -- totp
+```
+
+The extension itself cannot run under Node, so the tests cover the **parts that do not depend on a browser**.
+
+| Area | What is covered |
+| --- | --- |
+| Storage | IndexedDB reads and writes, run-log pruning, database upgrades |
+| Script generation | Playwright / Puppeteer / JSON output, including that the generated code parses |
+| JSON validation | Malformed input is rejected with a specific reason; valid recordings produce no false positives |
+| Template variables | Date formats and offsets, zero padding, TOTP (checked against the official RFC 6238 vectors) |
+| UI wiring | Every id manager.js references exists in manager.html; only one panel is visible at a time |
+| Languages | The Japanese and English catalogs match; every key used in code is defined |
+
+jsdom stands in for the DOM, and fake-indexeddb for IndexedDB.
+
+### Pages for manual testing
+
+Sample pages are included so you can try recording and replaying for real.
+
+```bash
+npm run serve
+```
+
+- http://127.0.0.1:8791/complex.html — an ordinary form (text, selects, dual list, drag and drop, uploads, iframe)
+- http://127.0.0.1:8791/patterns.html — the awkward cases (contenteditable, Shadow DOM, custom dropdown, right-click, canvas, dialogs, new tab)
+
+Sample files for upload testing live in `test/fixtures/samples/`.
+
 ## Where the data lives
 
 Recordings, uploaded file contents and the run log all live in IndexedDB (`webrec-db`) in your browser profile; schedules and the language setting live in `chrome.storage.local`. Nothing is ever sent to an external server.

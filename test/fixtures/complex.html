@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebRec 複合フォームテスト</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        margin: 20px;
+        color: #1f2937;
+      }
+      fieldset {
+        margin-bottom: 18px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 12px 16px;
+      }
+      legend {
+        font-weight: 700;
+        font-size: 13px;
+        color: #2563eb;
+      }
+      label {
+        margin-right: 14px;
+        font-size: 13px;
+      }
+      .dual {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .dual select {
+        min-width: 160px;
+        height: 120px;
+      }
+      .dual .buttons {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .droplists {
+        display: flex;
+        gap: 16px;
+      }
+      .droplist {
+        border: 2px dashed #9ca3af;
+        border-radius: 8px;
+        min-width: 180px;
+        min-height: 120px;
+        padding: 8px;
+        list-style: none;
+        margin: 0;
+      }
+      .droplist li {
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        border-radius: 4px;
+        padding: 4px 8px;
+        margin-bottom: 6px;
+        cursor: grab;
+        font-size: 13px;
+      }
+      iframe {
+        width: 100%;
+        height: 220px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+      }
+      #log {
+        font-family: Consolas, monospace;
+        font-size: 12px;
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 10px;
+        border-radius: 6px;
+        max-height: 160px;
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>WebRec 複合フォームテスト</h1>
+
+    <fieldset>
+      <legend>1. テキスト入力（訂正あり）</legend>
+      <input id="textField" type="text" placeholder="テキスト" />
+      <input id="passwordField" type="password" placeholder="パスワード" />
+      <textarea id="notesField" rows="2" placeholder="備考"></textarea>
+    </fieldset>
+
+    <fieldset>
+      <legend>1-b. 日付欄（テンプレート変数の確認用）</legend>
+      <label>年 <input id="yearField" type="text" size="6" /></label>
+      <label>月 <input id="monthField" type="text" size="4" /></label>
+      <label>日 <input id="dayField" type="text" size="4" /></label>
+      <label>日付(一括) <input id="dateField" type="date" /></label>
+      <label>受付番号 <input id="refField" type="text" size="12" /></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>2. チェックボックス</legend>
+      <label><input type="checkbox" id="chkA" name="opt" value="A" /> オプションA</label>
+      <label><input type="checkbox" id="chkB" name="opt" value="B" /> オプションB</label>
+      <label><input type="checkbox" id="chkC" name="opt" value="C" /> オプションC</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>3. ラジオボタン</legend>
+      <label><input type="radio" name="plan" id="planFree" value="free" /> 無料</label>
+      <label><input type="radio" name="plan" id="planPro" value="pro" /> Pro</label>
+      <label><input type="radio" name="plan" id="planMax" value="max" /> Max</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>4. 単一セレクト</legend>
+      <select id="singleSelect">
+        <option value="">-- 選択 --</option>
+        <option value="tokyo">東京</option>
+        <option value="osaka">大阪</option>
+        <option value="nagoya">名古屋</option>
+      </select>
+    </fieldset>
+
+    <fieldset>
+      <legend>5. デュアルリスト（ボタンで左右移動 / select multiple）</legend>
+      <div class="dual">
+        <select id="availableList" multiple>
+          <option value="item1">項目1</option>
+          <option value="item2">項目2</option>
+          <option value="item3">項目3</option>
+          <option value="item4">項目4</option>
+        </select>
+        <div class="buttons">
+          <button type="button" id="moveRight">→ 追加</button>
+          <button type="button" id="moveLeft">← 除外</button>
+        </div>
+        <select id="selectedList" multiple></select>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>6. ドラッグ&amp;ドロップでリスト間移動</legend>
+      <div class="droplists">
+        <ul class="droplist" id="dropSource">
+          <li draggable="true" id="dragItem1">ドラッグ項目1</li>
+          <li draggable="true" id="dragItem2">ドラッグ項目2</li>
+        </ul>
+        <ul class="droplist" id="dropTarget"></ul>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>6-b. ファイルアップロード</legend>
+      <label>単一 <input type="file" id="singleFile" /></label>
+      <label>複数 <input type="file" id="multiFile" multiple /></label>
+      <div id="fileLog"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>7. iframe 内のフォーム</legend>
+      <iframe id="innerFrame" src="frame-form.html"></iframe>
+    </fieldset>
+
+    <fieldset>
+      <legend>8. 送信 / 状態確認</legend>
+      <button type="button" id="submitBtn">送信</button>
+      <button type="button" id="dumpBtn">状態をログ出力</button>
+      <div id="log"></div>
+    </fieldset>
+
+    <script>
+      const logEl = document.getElementById('log');
+      function log(msg) {
+        logEl.textContent += msg + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function moveOptions(from, to) {
+        const opts = Array.from(from.selectedOptions);
+        for (const o of opts) {
+          from.removeChild(o);
+          o.selected = false;
+          to.appendChild(o);
+        }
+        log(`移動: ${opts.length}件 -> ${to.id}`);
+      }
+
+      document.getElementById('moveRight').addEventListener('click', () => {
+        moveOptions(document.getElementById('availableList'), document.getElementById('selectedList'));
+      });
+      document.getElementById('moveLeft').addEventListener('click', () => {
+        moveOptions(document.getElementById('selectedList'), document.getElementById('availableList'));
+      });
+
+      // --- drag and drop ---
+      let draggedId = null;
+      document.addEventListener('dragstart', (e) => {
+        if (e.target.matches('.droplist li')) {
+          draggedId = e.target.id;
+          e.dataTransfer.effectAllowed = 'move';
+        }
+      });
+      for (const list of document.querySelectorAll('.droplist')) {
+        list.addEventListener('dragover', (e) => e.preventDefault());
+        list.addEventListener('drop', (e) => {
+          e.preventDefault();
+          if (!draggedId) return;
+          const el = document.getElementById(draggedId);
+          const dest = e.target.closest('.droplist');
+          if (el && dest) {
+            dest.appendChild(el);
+            log(`D&D: ${draggedId} -> ${dest.id}`);
+          }
+          draggedId = null;
+        });
+      }
+
+      // アップロード欄: 選ばれたファイルの内容まで読み出して表示する
+      for (const id of ['singleFile', 'multiFile']) {
+        document.getElementById(id).addEventListener('change', async (e) => {
+          const files = Array.from(e.target.files || []);
+          const parts = [];
+          for (const f of files) {
+            const head = await f.slice(0, 40).text().catch(() => '(読めません)');
+            parts.push(`${f.name} (${f.size}B, ${f.type || 'no-type'}) "${head}"`);
+          }
+          const line = `${id}: ${parts.length ? parts.join(' | ') : '(選択なし)'}`;
+          document.getElementById('fileLog').textContent = line;
+          log(line);
+        });
+      }
+
+      document.getElementById('submitBtn').addEventListener('click', () => log('送信ボタンが押されました'));
+
+      document.getElementById('dumpBtn').addEventListener('click', () => {
+        const state = {
+          text: document.getElementById('textField').value,
+          year: document.getElementById('yearField').value,
+          month: document.getElementById('monthField').value,
+          day: document.getElementById('dayField').value,
+          date: document.getElementById('dateField').value,
+          ref: document.getElementById('refField').value,
+          password: document.getElementById('passwordField').value,
+          notes: document.getElementById('notesField').value,
+          checks: Array.from(document.querySelectorAll('input[name=opt]:checked')).map((c) => c.value),
+          plan: (document.querySelector('input[name=plan]:checked') || {}).value || null,
+          single: document.getElementById('singleSelect').value,
+          selectedList: Array.from(document.getElementById('selectedList').options).map((o) => o.value),
+          availableList: Array.from(document.getElementById('availableList').options).map((o) => o.value),
+          dropTarget: Array.from(document.getElementById('dropTarget').children).map((li) => li.id),
+          singleFile: Array.from(document.getElementById('singleFile').files || []).map((f) => f.name),
+          multiFile: Array.from(document.getElementById('multiFile').files || []).map((f) => f.name),
+        };
+        log('STATE=' + JSON.stringify(state));
+        window.__webrecState = state;
+      });
+    </script>
+  </body>
+</html>

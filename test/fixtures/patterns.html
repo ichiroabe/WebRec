@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebRec 入力パターン網羅テスト</title>
+    <style>
+      body { font-family: sans-serif; margin: 12px; font-size: 13px; }
+      fieldset { margin-bottom: 8px; padding: 6px 10px; }
+      legend { color: #2563eb; font-weight: bold; font-size: 12px; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+      #editor { border: 1px solid #ccc; padding: 6px; min-height: 40px; width: 320px; }
+      #dropdown { position: relative; display: inline-block; }
+      #ddList { display: none; position: absolute; background: #fff; border: 1px solid #ccc; z-index: 10; }
+      #ddList.open { display: block; }
+      #ddList div { padding: 4px 10px; cursor: pointer; }
+      #ddList div:hover { background: #eff6ff; }
+      #slider { width: 200px; height: 20px; background: #eee; position: relative; }
+      #knob { width: 16px; height: 20px; background: #2563eb; position: absolute; left: 0; }
+      #log { background: #0f172a; color: #e2e8f0; padding: 8px; font-family: monospace;
+             font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <h2>WebRec 入力パターン網羅テスト</h2>
+
+    <fieldset>
+      <legend>A. ネイティブ input（各 type）</legend>
+      <div class="row">
+        <label>text <input type="text" id="i_text" /></label>
+        <label>email <input type="email" id="i_email" /></label>
+        <label>tel <input type="tel" id="i_tel" /></label>
+        <label>url <input type="url" id="i_url" /></label>
+        <label>search <input type="search" id="i_search" /></label>
+        <label>number <input type="number" id="i_number" /></label>
+      </div>
+      <div class="row">
+        <label>date <input type="date" id="i_date" /></label>
+        <label>time <input type="time" id="i_time" /></label>
+        <label>datetime-local <input type="datetime-local" id="i_dtl" /></label>
+        <label>month <input type="month" id="i_month" /></label>
+        <label>week <input type="week" id="i_week" /></label>
+      </div>
+      <div class="row">
+        <label>range <input type="range" id="i_range" min="0" max="100" /></label>
+        <label>color <input type="color" id="i_color" /></label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>B. contenteditable（リッチテキスト）</legend>
+      <div id="editor" contenteditable="true">ここを編集</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>C. Shadow DOM（Web Components）</legend>
+      <my-field id="shadowHost"></my-field>
+    </fieldset>
+
+    <fieldset>
+      <legend>D. div ベースの独自ドロップダウン</legend>
+      <div id="dropdown">
+        <button type="button" id="ddButton">-- 選択 --</button>
+        <div id="ddList">
+          <div data-value="a">選択肢A</div>
+          <div data-value="b">選択肢B</div>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>E. マウス操作系</legend>
+      <div class="row">
+        <button type="button" id="dblTarget">ダブルクリック</button>
+        <button type="button" id="rightTarget">右クリック</button>
+        <div id="slider"><div id="knob"></div></div>
+        <span id="sliderVal">0</span>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>F. キーボード</legend>
+      <input type="text" id="i_keys" placeholder="Tab / 矢印 / Ctrl+S" />
+    </fieldset>
+
+    <fieldset>
+      <legend>G. ブラウザダイアログ・新規ウィンドウ</legend>
+      <div class="row">
+        <button type="button" id="alertBtn">alert</button>
+        <button type="button" id="confirmBtn">confirm</button>
+        <button type="button" id="promptBtn">prompt</button>
+        <a id="blankLink" href="page2.html" target="_blank">別タブで開く</a>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>H. canvas（署名など）</legend>
+      <canvas id="pad" width="200" height="60" style="border:1px solid #ccc"></canvas>
+    </fieldset>
+
+    <fieldset>
+      <legend>ログ</legend>
+      <button type="button" id="dumpBtn">状態をログ出力</button>
+      <div id="log"></div>
+    </fieldset>
+
+    <script>
+      const logEl = document.getElementById('log');
+      const log = (m) => { logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scrollHeight; };
+
+      // --- C. Shadow DOM ---
+      class MyField extends HTMLElement {
+        constructor() {
+          super();
+          const root = this.attachShadow({ mode: 'open' });
+          root.innerHTML =
+            '<label>shadow内テキスト <input type="text" id="shadowInput" /></label>' +
+            '<button type="button" id="shadowBtn">shadow内ボタン</button>';
+          root.getElementById('shadowBtn').addEventListener('click', () => log('shadow内ボタンが押された'));
+        }
+      }
+      customElements.define('my-field', MyField);
+
+      // --- D. 独自ドロップダウン ---
+      const ddButton = document.getElementById('ddButton');
+      const ddList = document.getElementById('ddList');
+      let ddValue = '';
+      ddButton.addEventListener('click', () => ddList.classList.toggle('open'));
+      ddList.querySelectorAll('div').forEach((opt) => {
+        opt.addEventListener('click', () => {
+          ddValue = opt.dataset.value;
+          ddButton.textContent = opt.textContent;
+          ddList.classList.remove('open');
+          log('独自ドロップダウン: ' + ddValue);
+        });
+      });
+
+      // --- E. マウス操作 ---
+      document.getElementById('dblTarget').addEventListener('dblclick', () => log('ダブルクリック検知'));
+      document.getElementById('rightTarget').addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        log('右クリック検知');
+      });
+
+      const slider = document.getElementById('slider');
+      const knob = document.getElementById('knob');
+      let sliderValue = 0;
+      let dragging = false;
+      slider.addEventListener('mousedown', (e) => { dragging = true; move(e); });
+      window.addEventListener('mousemove', (e) => { if (dragging) move(e); });
+      window.addEventListener('mouseup', () => { dragging = false; });
+      function move(e) {
+        const r = slider.getBoundingClientRect();
+        const x = Math.max(0, Math.min(r.width - 16, e.clientX - r.left));
+        knob.style.left = x + 'px';
+        sliderValue = Math.round((x / (r.width - 16)) * 100);
+        document.getElementById('sliderVal').textContent = sliderValue;
+      }
+
+      // --- F. キーボード ---
+      document.getElementById('i_keys').addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.key.toLowerCase() === 's') { e.preventDefault(); log('Ctrl+S 検知'); }
+        if (e.key === 'ArrowDown') log('ArrowDown 検知');
+        if (e.key === 'Tab') log('Tab 検知');
+      });
+
+      // --- G. ダイアログ ---
+      document.getElementById('alertBtn').addEventListener('click', () => { alert('alert です'); log('alert 閉じた'); });
+      document.getElementById('confirmBtn').addEventListener('click', () => log('confirm: ' + confirm('OK?')));
+      document.getElementById('promptBtn').addEventListener('click', () => log('prompt: ' + prompt('入力してください', 'default')));
+
+      // --- H. canvas ---
+      const pad = document.getElementById('pad');
+      const ctx = pad.getContext('2d');
+      let drawing = false;
+      pad.addEventListener('mousedown', (e) => { drawing = true; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); });
+      pad.addEventListener('mousemove', (e) => { if (drawing) { ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); } });
+      window.addEventListener('mouseup', () => { drawing = false; });
+
+      // --- 状態出力 ---
+      document.getElementById('dumpBtn').addEventListener('click', () => {
+        const shadowInput = document.getElementById('shadowHost').shadowRoot.getElementById('shadowInput');
+        log('STATE=' + JSON.stringify({
+          text: document.getElementById('i_text').value,
+          number: document.getElementById('i_number').value,
+          date: document.getElementById('i_date').value,
+          range: document.getElementById('i_range').value,
+          color: document.getElementById('i_color').value,
+          editor: document.getElementById('editor').innerHTML,
+          shadow: shadowInput.value,
+          dropdown: ddValue,
+          slider: sliderValue,
+        }));
+      });
+    </script>
+  </body>
+</html>
