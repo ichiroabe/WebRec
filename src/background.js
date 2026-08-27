@@ -416,7 +416,9 @@ function performStepInPage(step) {
     const m = TEXT_SELECTOR_RE.exec(sel);
     // テキスト頼みの指定は最後の試行でだけ使う。
     // 先に本来のセレクタで見つかるフレーム/要素に譲り、取り違えを避けるため。
-    if (m) return allowFallback ? findByLabel(m[1], m[2].replace(/\\"/g, '"')) : null;
+    // 記録側は \ と " の両方をエスケープしているので、両方まとめて戻す。
+    // \" だけを戻すと、バックスラッシュを含む表示文字が一致しなくなる。
+    if (m) return allowFallback ? findByLabel(m[1], m[2].replace(/\\([\\"])/g, '$1')) : null;
     try {
       return queryDeep(sel);
     } catch (_) {
@@ -566,12 +568,19 @@ function performStepInPage(step) {
     }
 
     if (step.type === 'assertMissing') {
+      // このフレームで見えているかだけを報告する。
+      // 「無いこと」の最終判断は、全フレームの結果を集めた呼び出し側で行う。
+      // フレームを特定しきれない場合、対象を持たないフレームが単独で
+      // 「無い＝合格」と名乗れてしまうため。
       const cands = candidatesOf(step).filter(selectorUsable);
       const start = Date.now();
       for (;;) {
-        if (!resolveAny(cands)) return done(); // 消えた/元から無い
+        if (!resolveAny(cands)) return done({ assertPresent: false }); // 消えた/元から無い
         if (Date.now() - start > elementTimeout) {
-          return done({ assertFailed: { kind: 'missing', selector: cands[0] } });
+          return done({
+            assertPresent: true,
+            assertFailed: { kind: 'missing', selector: cands[0] },
+          });
         }
         await new Promise((r) => setTimeout(r, 150));
       }
@@ -804,6 +813,20 @@ async function hydrateFiles(step) {
   return { ...step, files };
 }
 
+// 全フレームぶんの結果から、採用する 1 つを選ぶ。
+// 通常のステップは「引き受けたフレーム」が 1 つに絞れる前提でよいが、
+// assertMissing だけは「どのフレームにも無いこと」が合格条件なので、
+// 1 つでも見えていると報告したフレームがあれば、それを不合格として採用する。
+export function pickStepResult(step, results) {
+  const owners = (results || []).filter((r) => r && r.result && r.result.matched);
+  if (!owners.length) return null;
+  if (step && step.type === 'assertMissing') {
+    const stillThere = owners.find((r) => r.result.assertPresent);
+    return stillThere ? stillThere.result : owners[0].result;
+  }
+  return owners[0].result;
+}
+
 // ページ遷移の最中は executeScript が失敗するため、読み込み完了を待ってから注入し、
 // それでも失敗した場合は数回リトライする。
 async function executeStepWithRetry(tabId, step, cfg) {
@@ -842,8 +865,8 @@ async function executeStepWithRetry(tabId, step, cfg) {
         injectCap
       );
       if (!results) throw new Error(t('bg.injectTimeout'));
-      const hit = results.find((r) => r.result && r.result.matched);
-      if (hit) return hit.result;
+      const hit = pickStepResult(step, results);
+      if (hit) return hit;
       // Chrome はフレームごとの失敗を error として返す（呼び出し自体は成功する）。
       // これを捨てると「対象のフレームが見つかりません」に化けて原因が分からなくなる。
       const failed = results.find((r) => r.error);
@@ -1272,8 +1295,12 @@ async function runScheduled(scheduleId) {
     console.warn('WebRec: scheduled run failed', err);
   }
   const run = lastFinishedRun;
+  // 再生には分単位で時間がかかることがある。その間に予定が編集されている
+  // 可能性があるので、書き戻す直前に最新を読み直す（古い一覧で上書きしない）。
+  const latest = await getSchedules();
+  if (!latest.some((item) => item.id === scheduleId)) return; // 実行中に消された
   await setSchedules(
-    list.map((item) =>
+    latest.map((item) =>
       item.id === scheduleId
         ? {
             ...item,
