@@ -220,6 +220,28 @@ function renderTemplateHelp() {
   }
 }
 
+// ステップ一覧から待機ステップを差し込む（JSON を手で書かなくて済むように）
+async function insertWaitBefore(index) {
+  const rec = getCurrentRecording();
+  if (!rec) return;
+
+  const answer = prompt(t('steps.insertWaitPrompt'), '3');
+  if (answer === null) return;
+
+  const seconds = Number(String(answer).trim());
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    alert(t('steps.insertWaitInvalid'));
+    return;
+  }
+
+  const steps = [...rec.steps];
+  steps.splice(index, 0, { type: 'wait', ms: Math.round(seconds * 1000) });
+  await updateRecording(rec.id, { steps });
+  await refreshList();
+  await renderDetail();
+  flashCopyMsg(t('steps.insertWaitDone', { sec: seconds }));
+}
+
 // 保存済みのアップロードファイルを取り出す
 async function downloadStoredFile(fileRef) {
   let dataUrl = fileRef.dataUrl;
@@ -534,6 +556,17 @@ async function renderDetail() {
           li.appendChild(btn);
         }
       }
+
+      // このステップの前に待機を差し込むボタン
+      const waitBtn = document.createElement('button');
+      waitBtn.className = 'insert-wait-btn';
+      waitBtn.textContent = t('steps.insertWait');
+      waitBtn.title = t('steps.insertWaitTitle');
+      waitBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); // 行のクリック（JSONへ移動）と競合させない
+        insertWaitBefore(index);
+      });
+      li.appendChild(waitBtn);
 
       if (step.disabled) li.classList.add('step-disabled');
       li.addEventListener('click', () => revealInJson(index));

@@ -6,7 +6,11 @@
 
 import { saveRecording, getRecording, saveFile, getFile } from './db.js';
 import { getSettings, effectiveSettings, nextSeq } from './settings.js';
-import { resolveStepTemplates } from './template.js';
+import { resolveStepTemplates, resolveStepTotp } from './template.js';
+import { initI18n, t, getLang } from './i18n.js';
+
+// service worker が起きたら文言を確定させておく
+const i18nReady = initI18n();
 
 const SESSION_KEY = 'webrec_active_session';
 
@@ -51,16 +55,46 @@ async function notifyTab(tabId, message) {
   }
 }
 
+// 拡張機能を再読み込みした後など、既に開いていたタブには content script が
+// 注入されていない。その状態で記録を始めても何も拾えないため、
+// 生存確認して必要なら注入し直す（ページの再読み込みを不要にする）。
+async function ensureContentScript(tabId) {
+  try {
+    const res = await chrome.tabs.sendMessage(tabId, { type: 'WEBREC_PING' });
+    if (res && res.ok) return true;
+  } catch (_) {
+    /* 未注入。以下で注入する */
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['src/content.js'],
+    });
+    return true;
+  } catch (err) {
+    console.warn('WebRec: failed to inject content script', err);
+    return false;
+  }
+}
+
 async function startRecording({ tabId, startUrl, name }) {
   await restoreSession();
   if (session) {
-    throw new Error('すでに録画中です');
+    throw new Error(t('bg.alreadyRecording'));
   }
+
+  // 監視できる状態にしてからセッションを作る。ここで失敗したまま始めると
+  // 「記録中なのに何も記録されない」状態になってしまう。
+  const ready = await ensureContentScript(tabId);
+  if (!ready) {
+    throw new Error(t('bg.cannotObserve'));
+  }
+
   session = {
     id: crypto.randomUUID(),
     tabId,
     startUrl,
-    name: name || `録画 ${new Date().toLocaleString('ja-JP')}`,
+    name: name || t('bg.defaultName', { when: new Date().toLocaleString(getLang() === 'ja' ? 'ja-JP' : 'en-US') }),
     steps: [],
     startedAt: Date.now(),
     lastUrl: startUrl,
@@ -74,7 +108,7 @@ async function startRecording({ tabId, startUrl, name }) {
 async function stopRecording() {
   await restoreSession();
   if (!session) {
-    return { ok: false, error: '録画は開始されていません' };
+    return { ok: false, error: t('bg.notRecording') };
   }
   const finished = session;
   session = null;
@@ -115,6 +149,17 @@ async function externalizeFiles(step) {
 async function recordEvent(tabId, step) {
   await restoreSession();
   if (!session || session.tabId !== tabId) return;
+
+  // ダブルクリックはブラウザが click を2回先に出すので、その2件を取り消して置き換える
+  if (step.type === 'dblclick' && step.replacesClicks) {
+    for (let n = 0; n < step.replacesClicks; n++) {
+      const last = session.steps[session.steps.length - 1];
+      if (last && last.type === 'click' && last.selector === step.selector) session.steps.pop();
+      else break;
+    }
+    delete step.replacesClicks;
+  }
+
   session.steps.push(await externalizeFiles(step));
   if (step.type === 'navigate') session.lastUrl = step.url;
   await persistSession();
@@ -169,6 +214,24 @@ function handleHistoryStateUpdated(details) {
 chrome.webNavigation.onCommitted.addListener(handleCommitted);
 chrome.webNavigation.onHistoryStateUpdated.addListener(handleHistoryStateUpdated);
 
+// target="_blank" などで新しいタブが開いたら、そちらへ記録を引き継ぐ。
+// 追従しないと、新しいタブでの操作が丸ごと記録から抜け落ちてしまう。
+chrome.tabs.onCreated.addListener(async (tab) => {
+  await restoreSession();
+  if (!session || tab.openerTabId !== session.tabId) return;
+  session.steps.push({ type: 'newTab', url: tab.pendingUrl || tab.url || '', timestamp: Date.now() });
+  await setBadge(session.tabId, false);
+  session.tabId = tab.id;
+  session.lastUrl = tab.pendingUrl || tab.url || '';
+  await persistSession();
+  await setBadge(tab.id, true);
+  // 読み込み完了を待ってから監視を始める
+  setTimeout(async () => {
+    await ensureContentScript(tab.id);
+    await notifyTab(tab.id, { type: 'WEBREC_START' });
+  }, 500);
+});
+
 // 録画中のタブが閉じられたら、録れた分だけ保存して終える
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   await restoreSession();
@@ -188,9 +251,9 @@ async function waitForTabComplete(tabId, timeoutMs = 30000) {
   const start = Date.now();
   for (;;) {
     const tab = await chrome.tabs.get(tabId).catch(() => null);
-    if (!tab) throw new Error('タブが見つかりません');
+    if (!tab) throw new Error(t('bg.tabGone'));
     if (tab.status === 'complete') return;
-    if (Date.now() - start > timeoutMs) throw new Error('ページ読み込みがタイムアウトしました');
+    if (Date.now() - start > timeoutMs) throw new Error(t('bg.loadTimeout'));
     await sleep(150);
   }
 }
@@ -199,6 +262,8 @@ async function waitForTabComplete(tabId, timeoutMs = 30000) {
 // executeScript 経由で全フレームに注入されるため、外側の変数を閉じ込めず自己完結させる。
 // 各フレームは自身のフレーム位置が step.frames と一致する場合のみ実行する。
 function performStepInPage(step) {
+  const MSG = step.__msg || {}; // 呼び出し元が渡さなかった場合でも落ちないように
+
   function cssEscape(str) {
     if (window.CSS && CSS.escape) return CSS.escape(str);
     return String(str).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c);
@@ -248,23 +313,55 @@ function performStepInPage(step) {
   // ステップ個別の timeoutMs があればそれを優先する
   const elementTimeout = Number.isFinite(step.timeoutMs) ? step.timeoutMs : step.__elementTimeoutMs || 8000;
 
+  // shadow DOM を貫通してセレクタを解決する。
+  // 記録側は "host >>> inner" 形式で保存しているので、区間ごとに shadowRoot へ降りる。
+  function queryDeep(selector) {
+    const segments = String(selector).split(' >>> ');
+    let scope = document;
+    let el = null;
+    for (let i = 0; i < segments.length; i++) {
+      el = scope.querySelector(segments[i]); // 不正なら例外が飛ぶ
+      if (!el) return null;
+      if (i < segments.length - 1) {
+        if (!el.shadowRoot) return null; // 閉じた shadow root には入れない
+        scope = el.shadowRoot;
+      }
+    }
+    return el;
+  }
+
   function findEl(selector, timeoutMs) {
     return new Promise((resolve, reject) => {
       const start = Date.now();
       (function poll() {
         let el = null;
         try {
-          el = document.querySelector(selector);
+          el = queryDeep(selector);
         } catch (e) {
-          return reject(new Error('不正なセレクタ: ' + selector));
+          return reject(new Error((MSG.badSelector || '') + selector));
         }
         if (el) return resolve(el);
         if (Date.now() - start > timeoutMs) {
-          return reject(new Error('要素が見つかりません: ' + selector));
+          return reject(new Error((MSG.notFound || '') + selector));
         }
         setTimeout(poll, 150);
       })();
     });
+  }
+
+  // マウスイベントを座標付きで発火する（軌跡の再現用）
+  function fireMouse(el, kind, clientX, clientY, extra) {
+    el.dispatchEvent(
+      new MouseEvent(kind, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        clientX,
+        clientY,
+        button: 0,
+        ...(extra || {}),
+      })
+    );
   }
 
   function fireDragSequence(from, to) {
@@ -304,7 +401,7 @@ function performStepInPage(step) {
       const input = await findEl(step.selector, elementTimeout);
       const dt = new DataTransfer();
       for (const f of step.files || []) {
-        if (!f.dataUrl) throw new Error(`ファイルの中身が保存されていません: ${f.name}`);
+        if (!f.dataUrl) throw new Error((MSG.fileMissing || '') + f.name);
         dt.items.add(dataUrlToFile(f.dataUrl, f.name, f.mimeType));
       }
       input.files = dt.files;
@@ -313,8 +410,14 @@ function performStepInPage(step) {
       return { matched: true };
     }
 
+    // ウィンドウ全体のスクロールは対象要素を持たない
+    if (step.type === 'scroll' && !step.selector) {
+      window.scrollTo({ left: step.x || 0, top: step.y || 0, behavior: 'instant' });
+      return { matched: true };
+    }
+
     const el = await findEl(step.selector, elementTimeout);
-    el.scrollIntoView({ block: 'center', inline: 'center' });
+    if (step.type !== 'scroll') el.scrollIntoView({ block: 'center', inline: 'center' });
 
     if (step.type === 'click') {
       el.click();
@@ -343,11 +446,122 @@ function performStepInPage(step) {
       fireDragSequence(el, to);
     } else if (step.type === 'keydown') {
       el.focus();
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: step.key, bubbles: true, cancelable: true }));
-      el.dispatchEvent(new KeyboardEvent('keyup', { key: step.key, bubbles: true, cancelable: true }));
+      const keyInit = {
+        key: step.key,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        ctrlKey: !!step.ctrlKey,
+        altKey: !!step.altKey,
+        shiftKey: !!step.shiftKey,
+        metaKey: !!step.metaKey,
+      };
+      el.dispatchEvent(new KeyboardEvent('keydown', keyInit));
+      el.dispatchEvent(new KeyboardEvent('keyup', keyInit));
+    } else if (step.type === 'dblclick') {
+      // click 2回のあとに dblclick を出す（ブラウザと同じ順序）
+      el.click();
+      el.click();
+      el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, composed: true, detail: 2 }));
+    } else if (step.type === 'contextmenu') {
+      const r = el.getBoundingClientRect();
+      const cx = Math.round(r.left + r.width / 2);
+      const cy = Math.round(r.top + r.height / 2);
+      fireMouse(el, 'mousedown', cx, cy, { button: 2, buttons: 2 });
+      el.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clientX: cx,
+          clientY: cy,
+          button: 2,
+        })
+      );
+      fireMouse(el, 'mouseup', cx, cy, { button: 2, buttons: 0 });
+    } else if (step.type === 'editable') {
+      // リッチテキストは innerHTML を入れ替えて、エディタ側に変更を通知する
+      el.focus();
+      el.innerHTML = step.html;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText' }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.blur();
+    } else if (step.type === 'scroll') {
+      el.scrollTo({ left: step.x || 0, top: step.y || 0, behavior: 'instant' });
+      el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    } else if (step.type === 'pointerPath') {
+      // canvas への描画や mousedown 実装のドラッグを、座標の列で再現する
+      const r = el.getBoundingClientRect();
+      const at = (p) => [Math.round(r.left + p.x), Math.round(r.top + p.y)];
+      const pts = step.points || [];
+      if (pts.length) {
+        const [sx, sy] = at(pts[0]);
+        fireMouse(el, 'mousedown', sx, sy, { buttons: 1 });
+        for (let i = 1; i < pts.length; i++) {
+          const [mx, my] = at(pts[i]);
+          fireMouse(el, 'mousemove', mx, my, { buttons: 1 });
+          // 画面外に出た先で受け取る実装もあるため window にも流す
+          window.dispatchEvent(
+            new MouseEvent('mousemove', { bubbles: true, clientX: mx, clientY: my, buttons: 1 })
+          );
+        }
+        const [ex, ey] = at(pts[pts.length - 1]);
+        fireMouse(el, 'mouseup', ex, ey, { buttons: 0 });
+        window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: ex, clientY: ey }));
+      }
     }
     return { matched: true };
   })();
+}
+
+// alert / confirm / prompt はページの実行を止めてしまい、拡張機能からは閉じられない。
+// 再生中だけ MAIN ワールドで差し替えて、ダイアログを出さずに既定の応答を返す。
+function installDialogStubs() {
+  if (window.__webrecDialogStubbed) return;
+  window.__webrecDialogStubbed = true;
+  window.__webrecDialogs = [];
+  const log = (kind, message, answer) => window.__webrecDialogs.push({ kind, message, answer });
+  window.alert = function (message) {
+    log('alert', String(message == null ? '' : message), null);
+  };
+  window.confirm = function (message) {
+    log('confirm', String(message == null ? '' : message), true);
+    return true; // 「OK」を押した扱いにする
+  };
+  window.prompt = function (message, defaultValue) {
+    const answer = defaultValue == null ? '' : String(defaultValue);
+    log('prompt', String(message == null ? '' : message), answer);
+    return answer;
+  };
+}
+
+async function stubDialogs(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: 'MAIN', // ページ自身の window を書き換える必要がある
+      func: installDialogStubs,
+    });
+  } catch (err) {
+    console.warn('WebRec: failed to stub dialogs', err);
+  }
+}
+
+// 再生中にクリックで新しいタブが開いた場合、そのタブを掴み直す
+function waitForChildTab(openerTabId, timeoutMs) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onCreated.removeListener(listener);
+      resolve(null);
+    }, timeoutMs);
+    function listener(tab) {
+      if (tab.openerTabId !== openerTabId) return;
+      clearTimeout(timer);
+      chrome.tabs.onCreated.removeListener(listener);
+      resolve(tab);
+    }
+    chrome.tabs.onCreated.addListener(listener);
+  });
 }
 
 // アップロードのステップは、注入直前に IndexedDB からファイル本体を読み戻す
@@ -362,12 +576,12 @@ async function hydrateFiles(step) {
     if (!f.fileId) {
       throw new Error(
         f.omitted === 'too-large'
-          ? `ファイルが大きすぎて保存されていません: ${f.name}`
-          : `ファイルの中身が保存されていません: ${f.name}`
+          ? t('bg.fileTooLarge', { name: f.name })
+          : t('bg.fileMissing', { name: f.name })
       );
     }
     const stored = await getFile(f.fileId);
-    if (!stored || !stored.dataUrl) throw new Error(`保存済みファイルが見つかりません: ${f.name}`);
+    if (!stored || !stored.dataUrl) throw new Error(t('bg.fileNotStored', { name: f.name }));
     files.push({ ...f, dataUrl: stored.dataUrl });
   }
   return { ...step, files };
@@ -385,21 +599,32 @@ async function executeStepWithRetry(tabId, step, cfg) {
       const results = await chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
         func: performStepInPage,
-        args: [{ ...ready, __elementTimeoutMs: cfg.elementTimeoutMs }],
+        args: [
+          {
+            ...ready,
+            __elementTimeoutMs: cfg.elementTimeoutMs,
+            // 注入される関数からは t() を呼べないため、文言を渡しておく
+            __msg: {
+              badSelector: t('bg.badSelectorPrefix'),
+              notFound: t('bg.notFoundPrefix'),
+              fileMissing: t('bg.fileMissingPrefix'),
+            },
+          },
+        ],
       });
       if (results.some((r) => r.result && r.result.matched)) return;
-      lastErr = new Error('対象のフレームが見つかりません');
+      lastErr = new Error(t('bg.frameNotFound'));
     } catch (err) {
       lastErr = err;
     }
     await sleep(500); // 遷移が始まっていた場合に落ち着くのを待つ
   }
-  throw lastErr || new Error('ステップを実行できませんでした');
+  throw lastErr || new Error(t('bg.stepFailed'));
 }
 
 async function replayRecording(id, onProgress) {
   const rec = await getRecording(id);
-  if (!rec) throw new Error('録画が見つかりません');
+  if (!rec) throw new Error(t('bg.recordingNotFound'));
 
   // グローバル設定に、その録画固有の設定を重ねた実効値で再生する
   const cfg = effectiveSettings(await getSettings(), rec);
@@ -416,8 +641,9 @@ async function replayRecording(id, onProgress) {
 
   // 管理画面(進捗リスト)を見ながらでも再生の様子が隠れないよう、別ウィンドウで開く
   const win = await chrome.windows.create({ url: firstUrl, focused: true });
-  const tab = win.tabs[0];
+  let tab = win.tabs[0]; // newTab ステップで別のタブに乗り換えることがある
   await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
+  await stubDialogs(tab.id); // ダイアログで止まらないようにしておく
   await sleep(300);
 
   const total = rec.steps.length;
@@ -434,6 +660,7 @@ async function replayRecording(id, onProgress) {
       await chrome.tabs.update(tab.id, { url: startUrl });
       await sleep(200);
       await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
+      await stubDialogs(tab.id);
       await sleep(300);
     }
 
@@ -447,8 +674,9 @@ async function replayRecording(id, onProgress) {
         continue;
       }
 
-      // {{date:...}} や {{data.列名}} をここで実際の値に置き換える
-      const step = resolveStepTemplates(raw, tplCtx);
+      // {{date:...}} や {{data.列名}} をここで実際の値に置き換える。
+      // {{totp:...}} は毎回その場で計算する必要があり、Web Crypto が非同期なので別経路。
+      const step = await resolveStepTotp(resolveStepTemplates(raw, tplCtx), tplCtx);
 
       onProgress({ rowIndex: r, index: i, total, step, status: 'running' });
       try {
@@ -470,6 +698,17 @@ async function replayRecording(id, onProgress) {
             await sleep(200); // status が新しいナビゲーションに切り替わるのを少し待つ
             await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
           }
+          await stubDialogs(tab.id); // 遷移で window が入れ替わるので入れ直す
+        } else if (step.type === 'newTab') {
+          // 直前のクリックで開いたタブを掴む。既に開いていればそれを使う。
+          const child = await waitForChildTab(tab.id, 5000);
+          const opened =
+            child || (await chrome.tabs.query({ openerTabId: tab.id })).slice(-1)[0] || null;
+          if (!opened) throw new Error(t('bg.newTabNotOpened'));
+          tab = opened;
+          await waitForTabComplete(tab.id, cfg.pageLoadTimeoutMs);
+          await stubDialogs(tab.id);
+          await chrome.tabs.update(tab.id, { active: true });
         } else {
           await executeStepWithRetry(tab.id, step, cfg);
         }
@@ -500,6 +739,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = message.tabId ?? sender.tab?.id;
   (async () => {
     try {
+      await i18nReady; // エラー文言を利用者の言語で返すため
       switch (message.type) {
         case 'GET_STATE': {
           sendResponse(await getState(tabId));

@@ -46,11 +46,66 @@ function templateEngineSource() {
   ].join('\n');
 }
 
+function usesTotp(rec) {
+  const has = (v) => typeof v === 'string' && v.indexOf('{{totp:') !== -1;
+  if (has(rec.startUrl)) return true;
+  return (rec.steps || []).some(
+    (s) => has(s.value) || has(s.url) || (Array.isArray(s.values) && s.values.some(has))
+  );
+}
+
+// 書き出したスクリプト用の TOTP。Node の crypto は同期なので V を非同期にしなくて済む。
+function totpEngineSource() {
+  return [
+    "const __webrecCrypto = require('crypto');",
+    '',
+    '// {{totp:SECRET}} を実行時に計算する (RFC 6238)',
+    'function __webrecBase32(input) {',
+    "  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';",
+    "  const clean = String(input).toUpperCase().replace(/[=\\s-]/g, '');",
+    '  let bits = 0, value = 0;',
+    '  const out = [];',
+    '  for (const ch of clean) {',
+    '    const idx = alphabet.indexOf(ch);',
+    "    if (idx === -1) throw new Error('invalid base32 character: ' + ch);",
+    '    value = (value << 5) | idx;',
+    '    bits += 5;',
+    '    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }',
+    '  }',
+    '  return Buffer.from(out);',
+    '}',
+    '',
+    'function __webrecTotp(secret, digits) {',
+    '  const d = digits || 6;',
+    '  const counter = Math.floor(Date.now() / 1000 / 30);',
+    '  const buf = Buffer.alloc(8);',
+    '  buf.writeUInt32BE(Math.floor(counter / 0x100000000), 0);',
+    '  buf.writeUInt32BE(counter >>> 0, 4);',
+    "  const h = __webrecCrypto.createHmac('sha1', __webrecBase32(secret)).update(buf).digest();",
+    '  const off = h[h.length - 1] & 0x0f;',
+    '  const code = ((h[off] & 0x7f) << 24) | ((h[off + 1] & 0xff) << 16) | ((h[off + 2] & 0xff) << 8) | (h[off + 3] & 0xff);',
+    "  return String(code % Math.pow(10, d)).padStart(d, '0');",
+    '}',
+    '',
+    '// V に渡る前に {{totp:...}} だけ先に解決する',
+    'function __webrecTotpPass(s) {',
+    "  if (typeof s !== 'string' || s.indexOf('{{totp:') === -1) return s;",
+    '  return s.replace(/\\{\\{totp:([^}]+)\\}\\}/g, function (whole, body) {',
+    "    const args = body.split('|');",
+    '    try { return __webrecTotp(args[0].trim(), Number(args[1]) || 6); } catch (_) { return whole; }',
+    '  });',
+    '}',
+    '',
+  ].join('\n');
+}
+
 // データセットがなければ V は 1 つだけ。あれば行ごとに定義するのでここでは出さない。
 function templateHelperSource(rec) {
   const parts = [templateEngineSource()];
+  if (usesTotp(rec)) parts.push(totpEngineSource());
   if (!hasDataset(rec)) {
-    parts.push('const V = (s) => resolveTemplate(s, { now: __webrecNow, seq: __webrecSeq });', '');
+    const inner = usesTotp(rec) ? '__webrecTotpPass(s)' : 's';
+    parts.push(`const V = (s) => resolveTemplate(${inner}, { now: __webrecNow, seq: __webrecSeq });`, '');
   }
   return parts.join('\n');
 }
@@ -173,6 +228,12 @@ const KNOWN_STEP_TYPES = new Set([
   'wait',
   'waitForSelector',
   'upload',
+  'dblclick',
+  'contextmenu',
+  'editable',
+  'scroll',
+  'pointerPath',
+  'newTab',
 ]);
 
 // JSON を録画データとして受け入れる前に検証する。
@@ -207,6 +268,13 @@ export function parseRecordingJson(text) {
       if (typeof step.url !== 'string') throw new Error(`${at}.url がありません`);
     } else if (step.type === 'wait') {
       if (!Number.isFinite(step.ms)) throw new Error(`${at}.ms は数値である必要があります`);
+    } else if (step.type === 'newTab') {
+      // 新しいタブを掴むだけなので対象要素は不要
+    } else if (step.type === 'scroll' && !step.selector) {
+      // ウィンドウ全体のスクロール
+      if (!Number.isFinite(step.x) || !Number.isFinite(step.y)) {
+        throw new Error(`${at}.x / ${at}.y は数値である必要があります`);
+      }
     } else {
       if (typeof step.selector !== 'string' || !step.selector) {
         throw new Error(`${at}.selector がありません`);
@@ -217,6 +285,19 @@ export function parseRecordingJson(text) {
     }
     if (step.type === 'dragAndDrop' && typeof step.toSelector !== 'string') {
       throw new Error(`${at}.toSelector がありません`);
+    }
+    if (step.type === 'editable' && typeof step.html !== 'string') {
+      throw new Error(`${at}.html がありません`);
+    }
+    if (step.type === 'pointerPath') {
+      if (!Array.isArray(step.points) || step.points.length < 2) {
+        throw new Error(`${at}.points は2点以上の配列である必要があります`);
+      }
+      step.points.forEach((pt, j) => {
+        if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+          throw new Error(`${at}.points[${j}] は { x, y } 形式である必要があります`);
+        }
+      });
     }
     if (step.type === 'upload') {
       if (!Array.isArray(step.files)) throw new Error(`${at}.files は配列である必要があります`);
@@ -235,6 +316,13 @@ export function parseRecordingJson(text) {
     dataset: validateDataset(data.dataset),
     createdAt: Number.isFinite(data.createdAt) ? data.createdAt : Date.now(),
   };
+}
+
+// Playwright の CSS エンジンは open な shadow root を自動で貫通するため、
+// 記録した "host >>> inner" のうち最後の区間だけを渡せばよい。
+function pwSel(selector) {
+  const parts = String(selector).split(' >>> ');
+  return parts[parts.length - 1];
 }
 
 // iframe 内のステップは page.frameLocator(...) を連ねたスコープから辿る
@@ -269,37 +357,80 @@ function playwrightBody(rec, ind) {
         break;
       case 'waitForSelector':
         lines.push(
-          `${ind}await ${scope}.locator(${jsStr(step.selector)}).waitFor(${
+          `${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).waitFor(${
             Number.isFinite(step.timeoutMs) ? `{ timeout: ${step.timeoutMs} }` : ''
           });`
         );
         break;
       case 'click':
-        lines.push(`${ind}await ${scope}.locator(${jsStr(step.selector)}).click();`);
+        lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).click();`);
         break;
       case 'input':
-        lines.push(`${ind}await ${scope}.locator(${jsStr(step.selector)}).fill(${val(step.value)});`);
+        lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).fill(${val(step.value)});`);
         break;
       case 'select':
-        lines.push(`${ind}await ${scope}.locator(${jsStr(step.selector)}).selectOption(${val(step.value)});`);
+        lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).selectOption(${val(step.value)});`);
         break;
       case 'selectMultiple':
-        lines.push(`${ind}await ${scope}.locator(${jsStr(step.selector)}).selectOption(${valArray(step.values)});`);
+        lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).selectOption(${valArray(step.values)});`);
         break;
       case 'dragAndDrop':
         lines.push(
-          `${ind}await ${scope}.locator(${jsStr(step.selector)}).dragTo(${scope}.locator(${jsStr(step.toSelector)}));`
+          `${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).dragTo(${scope}.locator(${jsStr(pwSel(step.toSelector))}));`
         );
         break;
       case 'upload': {
         // 書き出したスクリプトはローカルのファイルパスを渡す方式にする。
         // 管理画面の「保存」から取り出したファイルを files/ に置いて実行する。
         const paths = (step.files || []).map((f) => `./files/${f.name}`);
-        lines.push(`${ind}await ${scope}.locator(${jsStr(step.selector)}).setInputFiles(${JSON.stringify(paths)});`);
+        lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).setInputFiles(${JSON.stringify(paths)});`);
         break;
       }
+      case 'dblclick':
+        lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).dblclick();`);
+        break;
+      case 'contextmenu':
+        lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).click({ button: 'right' });`);
+        break;
+      case 'editable':
+        lines.push(
+          `${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).evaluate((el, html) => {`,
+          `${ind}  el.innerHTML = html;`,
+          `${ind}  el.dispatchEvent(new InputEvent('input', { bubbles: true }));`,
+          `${ind}}, ${val(step.html)});`
+        );
+        break;
+      case 'scroll':
+        if (step.selector) {
+          lines.push(
+            `${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).evaluate((el) => el.scrollTo(${
+              step.x || 0
+            }, ${step.y || 0}));`
+          );
+        } else {
+          lines.push(`${ind}await page.evaluate(() => window.scrollTo(${step.x || 0}, ${step.y || 0}));`);
+        }
+        break;
+      case 'pointerPath': {
+        const pts = JSON.stringify(step.points || []);
+        lines.push(
+          `${ind}{`,
+          `${ind}  const box = await ${scope}.locator(${jsStr(pwSel(step.selector))}).boundingBox();`,
+          `${ind}  const pts = ${pts};`,
+          `${ind}  await page.mouse.move(box.x + pts[0].x, box.y + pts[0].y);`,
+          `${ind}  await page.mouse.down();`,
+          `${ind}  for (const p of pts.slice(1)) await page.mouse.move(box.x + p.x, box.y + p.y);`,
+          `${ind}  await page.mouse.up();`,
+          `${ind}}`
+        );
+        break;
+      }
+      case 'newTab':
+        lines.push(`${ind}page = await page.context().waitForEvent('page'); // 新しいタブに移る`);
+        lines.push(`${ind}await page.waitForLoadState();`);
+        break;
       case 'keydown':
-        lines.push(`${ind}await ${scope}.locator(${jsStr(step.selector)}).press(${jsStr(step.key)});`);
+        lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).press(${jsStr(step.key)});`);
         break;
       default:
         lines.push(`${ind}// 未対応のステップ: ${step.type}`);
@@ -322,7 +453,10 @@ export function generatePlaywright(rec) {
     lines.push(datasetSource(rec));
     lines.push('dataset.forEach((row, i) => {');
     lines.push(`  test(\`${name.replace(/`/g, '\\`')} [\${i + 1}/\${dataset.length}]\`, async ({ page }) => {`);
-    lines.push('    const V = (s) => resolveTemplate(s, { now: __webrecNow, seq: __webrecSeq, data: row, row: i + 1 });');
+    const inner = usesTotp(rec) ? '__webrecTotpPass(s)' : 's';
+    lines.push(
+      `    const V = (s) => resolveTemplate(${inner}, { now: __webrecNow, seq: __webrecSeq, data: row, row: i + 1 });`
+    );
     lines.push(...playwrightBody(rec, '    '));
     lines.push('  });');
     lines.push('});');
@@ -405,6 +539,47 @@ function puppeteerBody(rec, ind) {
         lines.push(`${ind}await (await ${scope}.waitForSelector(${jsStr(step.selector)})).uploadFile(${args});`);
         break;
       }
+      case 'dblclick':
+        lines.push(`${ind}await ${scope}.click(${jsStr(step.selector)}, { clickCount: 2 });`);
+        break;
+      case 'contextmenu':
+        lines.push(`${ind}await ${scope}.click(${jsStr(step.selector)}, { button: 'right' });`);
+        break;
+      case 'editable':
+        lines.push(
+          `${ind}await ${scope}.$eval(${jsStr(step.selector)}, (el, html) => {`,
+          `${ind}  el.innerHTML = html;`,
+          `${ind}  el.dispatchEvent(new InputEvent('input', { bubbles: true }));`,
+          `${ind}}, ${val(step.html)});`
+        );
+        break;
+      case 'scroll':
+        if (step.selector) {
+          lines.push(
+            `${ind}await ${scope}.$eval(${jsStr(step.selector)}, (el) => el.scrollTo(${step.x || 0}, ${step.y || 0}));`
+          );
+        } else {
+          lines.push(`${ind}await page.evaluate(() => window.scrollTo(${step.x || 0}, ${step.y || 0}));`);
+        }
+        break;
+      case 'pointerPath': {
+        const pts = JSON.stringify(step.points || []);
+        lines.push(
+          `${ind}{`,
+          `${ind}  const box = await (await ${scope}.waitForSelector(${jsStr(step.selector)})).boundingBox();`,
+          `${ind}  const pts = ${pts};`,
+          `${ind}  await page.mouse.move(box.x + pts[0].x, box.y + pts[0].y);`,
+          `${ind}  await page.mouse.down();`,
+          `${ind}  for (const p of pts.slice(1)) await page.mouse.move(box.x + p.x, box.y + p.y);`,
+          `${ind}  await page.mouse.up();`,
+          `${ind}}`
+        );
+        break;
+      }
+      case 'newTab':
+        lines.push(`${ind}await new Promise((r) => setTimeout(r, 500));`);
+        lines.push(`${ind}page = (await browser.pages()).slice(-1)[0]; // 新しいタブに移る`);
+        break;
       case 'keydown':
         lines.push(`${ind}await ${scope}.focus(${jsStr(step.selector)});`);
         lines.push(`${ind}await page.keyboard.press(${jsStr(step.key)});`);
@@ -427,7 +602,9 @@ export function generatePuppeteer(rec) {
 
   lines.push('(async () => {');
   lines.push('  const browser = await puppeteer.launch({ headless: false });');
-  lines.push('  const page = await browser.newPage();');
+  // newTab ステップで page を差し替えるため、その場合だけ let にする
+  const usesNewTab = (rec.steps || []).some((st) => st.type === 'newTab');
+  lines.push(`  ${usesNewTab ? 'let' : 'const'} page = await browser.newPage();`);
 
   if (hasDataset(rec)) {
     // データ1行につきシナリオを1回流す
@@ -435,7 +612,9 @@ export function generatePuppeteer(rec) {
     lines.push('  for (let i = 0; i < dataset.length; i++) {');
     lines.push('    const row = dataset[i];');
     lines.push(
-      '    const V = (s) => resolveTemplate(s, { now: __webrecNow, seq: __webrecSeq, data: row, row: i + 1 });'
+      `    const V = (s) => resolveTemplate(${
+        usesTotp(rec) ? '__webrecTotpPass(s)' : 's'
+      }, { now: __webrecNow, seq: __webrecSeq, data: row, row: i + 1 });`
     );
     lines.push('    console.log(`--- ${i + 1}/${dataset.length} 行目 ---`, row);');
     lines.push(...puppeteerBody(rec, '    '));
@@ -469,6 +648,20 @@ export function stepSummary(step) {
       return t('step.wait', { ms: Number.isFinite(step.ms) ? step.ms : 1000 });
     case 'waitForSelector':
       return t('step.waitForSelector', { selector: step.selector }) + inFrame;
+    case 'dblclick':
+      return t('step.dblclick', { text: step.text ? `"${step.text}" ` : '', selector: step.selector }) + inFrame;
+    case 'contextmenu':
+      return t('step.contextmenu', { text: step.text ? `"${step.text}" ` : '', selector: step.selector }) + inFrame;
+    case 'editable':
+      return t('step.editable', { selector: step.selector, text: step.text || '' }) + inFrame;
+    case 'scroll':
+      return step.selector
+        ? t('step.scrollElement', { selector: step.selector, x: step.x, y: step.y }) + inFrame
+        : t('step.scrollWindow', { x: step.x, y: step.y });
+    case 'pointerPath':
+      return t('step.pointerPath', { selector: step.selector, n: (step.points || []).length }) + inFrame;
+    case 'newTab':
+      return t('step.newTab', { url: step.url || '' });
     case 'upload': {
       const files = step.files || [];
       if (!files.length) return t('step.uploadClear', { selector: step.selector }) + inFrame;

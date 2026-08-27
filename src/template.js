@@ -125,6 +125,106 @@ export function resolveTemplate(text, ctx) {
   });
 }
 
+// --- ワンタイムパスワード (TOTP / RFC 6238) ---
+// 記録した数字は 30 秒で無効になるため、再生時に「その場で計算する」必要がある。
+// 認証アプリの登録時に表示される Base32 のシークレットを {{totp:SECRET}} に書く。
+
+export function base32Decode(input) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const clean = String(input).toUpperCase().replace(/[=\s-]/g, '');
+  if (!clean) throw new Error('empty secret');
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (const ch of clean) {
+    const idx = alphabet.indexOf(ch);
+    if (idx === -1) throw new Error('invalid base32 character: ' + ch);
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return new Uint8Array(out);
+}
+
+// counter を 8 バイトのビッグエンディアンに詰める
+function counterBytes(counter) {
+  const buf = new ArrayBuffer(8);
+  const view = new DataView(buf);
+  view.setUint32(0, Math.floor(counter / 0x100000000));
+  view.setUint32(4, counter >>> 0);
+  return buf;
+}
+
+// HMAC の結果から RFC 4226 の dynamic truncation で数字を取り出す
+function truncate(hmac, digits) {
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const code =
+    ((hmac[offset] & 0x7f) << 24) |
+    ((hmac[offset + 1] & 0xff) << 16) |
+    ((hmac[offset + 2] & 0xff) << 8) |
+    (hmac[offset + 3] & 0xff);
+  const mod = code % Math.pow(10, digits);
+  let s = String(mod);
+  while (s.length < digits) s = '0' + s;
+  return s;
+}
+
+export async function generateTotp(secret, options) {
+  const opts = options || {};
+  const digits = Number.isFinite(opts.digits) ? opts.digits : 6;
+  const period = Number.isFinite(opts.period) ? opts.period : 30;
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+
+  const key = base32Decode(secret);
+  const counter = Math.floor(now / 1000 / period);
+  const cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, counterBytes(counter)));
+  return truncate(sig, digits);
+}
+
+// {{totp:SECRET}} / {{totp:SECRET|8}} を実際のコードに置き換える。
+// crypto.subtle が非同期のため、同期の resolveTemplate とは別の経路にしている。
+export async function resolveTotp(text, ctx) {
+  if (typeof text !== 'string' || text.indexOf('{{totp:') === -1) return text;
+
+  const matches = [...text.matchAll(/\{\{totp:([^}]+)\}\}/g)];
+  let out = text;
+  for (const m of matches) {
+    const args = m[1].split('|');
+    const secret = args[0].trim();
+    const digits = Number(args[1]);
+    try {
+      const code = await generateTotp(secret, {
+        digits: Number.isFinite(digits) ? digits : 6,
+        now: ctx && Number.isFinite(ctx.now) ? ctx.now : Date.now(),
+      });
+      out = out.replace(m[0], code);
+    } catch (_) {
+      // シークレットが不正な場合は置換せず残す（画面に出るので気づける）
+    }
+  }
+  return out;
+}
+
+// ステップ内の {{totp:...}} を解決する（値・複数値・URL）
+export async function resolveStepTotp(step, ctx) {
+  const hasTotp = (v) => typeof v === 'string' && v.indexOf('{{totp:') !== -1;
+  if (!hasTotp(step.value) && !hasTotp(step.url) && !(step.values || []).some(hasTotp)) return step;
+
+  const out = { ...step };
+  if (typeof out.value === 'string') out.value = await resolveTotp(out.value, ctx);
+  if (typeof out.url === 'string') out.url = await resolveTotp(out.url, ctx);
+  if (Array.isArray(out.values)) {
+    const vals = [];
+    for (const v of out.values) vals.push(await resolveTotp(v, ctx));
+    out.values = vals;
+  }
+  return out;
+}
+
 // ステップ内のテンプレートを解決した新しいステップを返す（元のステップは変更しない）
 export function resolveStepTemplates(step, ctx) {
   const out = { ...step };
@@ -158,6 +258,7 @@ export const TEMPLATE_HELP = [
   { syntax: '{{seq}}', descKey: 'tpl.seq' },
   { syntax: '{{seq:000}}', descKey: 'tpl.seqPadded' },
   { syntax: '{{uuid}}', descKey: 'tpl.uuid' },
+  { syntaxKey: 'totp', descKey: 'tpl.totp' },
 ];
 
 // 言語によって見せ方を変える構文サンプル
@@ -165,5 +266,6 @@ export function helpSyntax(item, lang) {
   if (!item.syntaxKey) return item.syntax;
   if (item.syntaxKey === 'data') return lang === 'ja' ? '{{data.列名}}' : '{{data.column}}';
   if (item.syntaxKey === 'dateFormat') return lang === 'ja' ? '{{date:YYYY年MM月DD日}}' : '{{date:MM/DD/YYYY}}';
+  if (item.syntaxKey === 'totp') return lang === 'ja' ? '{{totp:シークレット}}' : '{{totp:SECRET}}';
   return item.syntax || '';
 }

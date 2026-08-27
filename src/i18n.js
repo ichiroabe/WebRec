@@ -43,6 +43,24 @@ const MESSAGES = {
     'popup.errStart': '記録を開始できませんでした',
     'popup.errStop': '記録を停止できませんでした',
 
+    // --- バックグラウンド ---
+    'bg.alreadyRecording': 'すでに録画中です',
+    'bg.notRecording': '録画は開始されていません',
+    'bg.cannotObserve': 'このページを監視できませんでした。ページを再読み込みしてからお試しください。',
+    'bg.defaultName': '録画 {when}',
+    'bg.tabGone': 'タブが見つかりません',
+    'bg.loadTimeout': 'ページ読み込みがタイムアウトしました',
+    'bg.frameNotFound': '対象のフレームが見つかりません',
+    'bg.stepFailed': 'ステップを実行できませんでした',
+    'bg.recordingNotFound': '録画が見つかりません',
+    'bg.newTabNotOpened': '新しいタブが開きませんでした',
+    'bg.fileTooLarge': 'ファイルが大きすぎて保存されていません: {name}',
+    'bg.fileMissing': 'ファイルの中身が保存されていません: {name}',
+    'bg.fileNotStored': '保存済みファイルが見つかりません: {name}',
+    'bg.badSelectorPrefix': '不正なセレクタ: ',
+    'bg.notFoundPrefix': '要素が見つかりません: ',
+    'bg.fileMissingPrefix': 'ファイルの中身が保存されていません: ',
+
     // --- 記録中のオーバーレイ（content script は module ではないため content.js 側にも同じ文言を持つ） ---
     'overlay.recording': 'WebRec 録画中',
     'overlay.stop': '■ 停止',
@@ -84,6 +102,11 @@ const MESSAGES = {
     'steps.saveFile': '⭳ {name} を保存',
     'steps.saveFileTitle': 'このファイルを取り出します（書き出したスクリプトの files/ に置いてください）',
     'steps.fileMissing': '「{name}」の中身が保存されていません',
+    'steps.insertWait': '＋ 待機',
+    'steps.insertWaitTitle': 'このステップの前に待機を差し込みます',
+    'steps.insertWaitPrompt': '何秒待ちますか？（小数可）',
+    'steps.insertWaitInvalid': '正の数を入力してください',
+    'steps.insertWaitDone': '{sec} 秒の待機を差し込みました',
 
     // --- JSON タブ ---
     'json.hint':
@@ -185,6 +208,13 @@ const MESSAGES = {
     'step.upload': 'ファイル選択: {selector} = {names}',
     'step.uploadOmitted': '（中身なし）',
     'step.inFrame': ' [iframe: {frames}]',
+    'step.dblclick': 'ダブルクリック: {text}{selector}',
+    'step.contextmenu': '右クリック: {text}{selector}',
+    'step.editable': 'リッチテキスト入力: {selector} = "{text}"',
+    'step.scrollWindow': 'スクロール: ({x}, {y})',
+    'step.scrollElement': 'スクロール: {selector} ({x}, {y})',
+    'step.pointerPath': 'マウス軌跡: {selector}（{n} 点）',
+    'step.newTab': '新しいタブに移る -> {url}',
 
     // --- 検証メッセージ ---
     'v.stepAt': 'ステップ {n}',
@@ -200,6 +230,7 @@ const MESSAGES = {
     'v.emptyValues': '{at}: 複数選択の値が空です（何も選ばれません）',
     'v.disabledAndOptional': '{at}: 無効化されているため optional は効きません',
     'v.passwordPlaceholder': '{at}: <PASSWORD> のままです。実際の値に書き換えてください',
+    'v.otpPlaceholder': '{at}: ワンタイムパスワードは記録した数字が使えません。{{totp:シークレット}} に書き換えてください',
     'v.dataNoColumn': '{at}: {var} に列名がありません',
     'v.dataWithoutDataset': '{at}: {var} を使っていますが「データ」タブが空です',
     'v.dataUnknownColumn': '{at}: データに「{column}」列がありません（ある列: {available}）',
@@ -226,6 +257,7 @@ const MESSAGES = {
     'tpl.seq': '再生するたびに1増える通し番号（0埋めなし）',
     'tpl.seqPadded': '同上を0埋め（001, 002 …）',
     'tpl.uuid': 'ランダムなUUID',
+    'tpl.totp': 'ワンタイムパスワード（認証アプリのシークレットから毎回計算）',
   },
 
   en: {
@@ -256,6 +288,24 @@ const MESSAGES = {
     'popup.errNotHttp': 'Recording is not available on this page (open an http/https page first)',
     'popup.errStart': 'Could not start recording',
     'popup.errStop': 'Could not stop recording',
+
+    // --- Background ---
+    'bg.alreadyRecording': 'Already recording',
+    'bg.notRecording': 'Recording has not been started',
+    'bg.cannotObserve': 'Could not observe this page. Reload the page and try again.',
+    'bg.defaultName': 'Recording {when}',
+    'bg.tabGone': 'The tab is gone',
+    'bg.loadTimeout': 'The page took too long to load',
+    'bg.frameNotFound': 'Could not find the target frame',
+    'bg.stepFailed': 'Could not run the step',
+    'bg.recordingNotFound': 'Recording not found',
+    'bg.newTabNotOpened': 'No new tab was opened',
+    'bg.fileTooLarge': 'Too large to store: {name}',
+    'bg.fileMissing': 'The contents of {name} were not stored',
+    'bg.fileNotStored': 'The stored file was not found: {name}',
+    'bg.badSelectorPrefix': 'Invalid selector: ',
+    'bg.notFoundPrefix': 'Element not found: ',
+    'bg.fileMissingPrefix': 'File contents were not stored: ',
 
     // --- Recording overlay (content.js keeps its own copy: it is not a module) ---
     'overlay.recording': 'WebRec recording',
@@ -298,6 +348,11 @@ const MESSAGES = {
     'steps.saveFile': '⭳ Save {name}',
     'steps.saveFileTitle': 'Saves this file (put it in files/ next to the exported script)',
     'steps.fileMissing': 'The contents of "{name}" were not stored',
+    'steps.insertWait': '＋ Wait',
+    'steps.insertWaitTitle': 'Insert a wait before this step',
+    'steps.insertWaitPrompt': 'How many seconds? (decimals allowed)',
+    'steps.insertWaitInvalid': 'Enter a positive number',
+    'steps.insertWaitDone': 'Inserted a {sec}s wait',
 
     // --- JSON tab ---
     'json.hint':
@@ -399,6 +454,13 @@ const MESSAGES = {
     'step.upload': 'Choose files: {selector} = {names}',
     'step.uploadOmitted': ' (contents not stored)',
     'step.inFrame': ' [iframe: {frames}]',
+    'step.dblclick': 'Double-click: {text}{selector}',
+    'step.contextmenu': 'Right-click: {text}{selector}',
+    'step.editable': 'Rich text: {selector} = "{text}"',
+    'step.scrollWindow': 'Scroll to ({x}, {y})',
+    'step.scrollElement': 'Scroll {selector} to ({x}, {y})',
+    'step.pointerPath': 'Mouse path: {selector} ({n} points)',
+    'step.newTab': 'Switch to the new tab -> {url}',
 
     // --- Validation messages ---
     'v.stepAt': 'Step {n}',
@@ -414,6 +476,7 @@ const MESSAGES = {
     'v.emptyValues': '{at}: the multi-select values are empty (nothing will be selected)',
     'v.disabledAndOptional': '{at}: the step is disabled, so optional has no effect',
     'v.passwordPlaceholder': '{at}: still <PASSWORD>. Replace it with the real value',
+    'v.otpPlaceholder': '{at}: a recorded one-time code cannot be reused. Replace it with {{totp:SECRET}}',
     'v.dataNoColumn': '{at}: {var} has no column name',
     'v.dataWithoutDataset': '{at}: {var} is used but the Data tab is empty',
     'v.dataUnknownColumn': '{at}: the data has no "{column}" column (available: {available})',
@@ -440,6 +503,7 @@ const MESSAGES = {
     'tpl.seq': 'A counter that increases by 1 on every replay',
     'tpl.seqPadded': 'Same, zero-padded (001, 002 …)',
     'tpl.uuid': 'A random UUID',
+    'tpl.totp': 'A one-time code, computed fresh from your authenticator secret',
   },
 };
 

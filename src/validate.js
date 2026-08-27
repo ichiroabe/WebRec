@@ -7,7 +7,7 @@
 
 import { t } from './i18n.js';
 
-const KNOWN_VARS = ['data', 'row', 'date', 'time', 'datetime', 'random', 'seq', 'uuid'];
+const KNOWN_VARS = ['data', 'row', 'date', 'time', 'datetime', 'random', 'seq', 'uuid', 'totp'];
 
 function issue(level, code, message, stepIndex = null) {
   return { level, code, message, stepIndex };
@@ -39,12 +39,16 @@ function valueStrings(step) {
 
 function isValidSelector(sel) {
   if (typeof document === 'undefined') return true; // DOM の無い環境では判定しない
-  try {
-    document.querySelector(sel);
-    return true;
-  } catch (_) {
-    return false;
+  // shadow DOM を跨ぐセレクタは " >>> " 区切り。区間ごとに構文を見る。
+  for (const segment of String(sel).split(' >>> ')) {
+    if (!segment.trim()) return false;
+    try {
+      document.querySelector(segment);
+    } catch (_) {
+      return false;
+    }
   }
+  return true;
 }
 
 export function validateRecording(rec) {
@@ -143,6 +147,10 @@ export function validateRecording(rec) {
         issues.push(
           issue('warning', 'password-placeholder', t('v.passwordPlaceholder', { at }), i)
         );
+      }
+      // ワンタイムパスワードは記録した数字が使えないので、必ず書き換えが要る
+      if (v.includes('<OTP>')) {
+        issues.push(issue('error', 'otp-placeholder', t('v.otpPlaceholder', { at }), i));
       }
     }
 

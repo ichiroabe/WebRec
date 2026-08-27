@@ -276,6 +276,27 @@ td.url-cell {
   font-size: 11px;
 }
 
+.insert-wait-btn {
+  margin-left: 8px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 4px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  visibility: hidden;
+}
+
+#stepsList li.step-item:hover .insert-wait-btn {
+  visibility: visible;
+}
+
+.insert-wait-btn:hover {
+  background: #fffbeb;
+  border-color: #d97706;
+  color: #b45309;
+}
+
 .file-save-btn {
   margin-left: 8px;
   border: 1px solid #d1d5db;
@@ -366,7 +387,9 @@ td.url-cell {
   font-size: 11px;
 }
 
-#jsonPanel {
+/* :not(.hidden) が必要。ID セレクタは .panel.hidden より詳細度が高く、
+   そのままだと非表示指定を打ち消して常に表示されてしまう。 */
+#jsonPanel:not(.hidden) {
   display: flex;
   flex-direction: column;
 }

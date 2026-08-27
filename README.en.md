@@ -35,16 +35,43 @@ Japanese and English are both supported. Switch with the selector in the manager
 3. Press **■ Stop and save** in the popup, or **■ Stop** on the on-page indicator
 4. Open the manager to view, export or replay what you recorded
 
-## What gets recorded
+## Supported input patterns
 
-- Clicks (buttons, links, checkboxes, radio buttons, labels…)
-- Text inputs and textareas — only the committed value is recorded (on `change`), so corrections and retyping never show up
-- Select boxes, single and multiple
-- Enter / Escape keys
-- HTML5 drag and drop (moving items between two lists, etc.)
-- File uploads (`<input type="file">` — see below)
-- Operations inside iframes (the frame path is recorded and honoured on replay and in exports)
-- Page transitions (SPA history changes are debounced into a single step)
+| Category | Supported |
+| --- | --- |
+| Text inputs (text / email / tel / url / search / number / password) | Yes — committed value only; passwords are masked |
+| Date inputs (date / time / datetime-local / month / week) | Yes |
+| range (slider), color | Yes |
+| textarea | Yes |
+| Checkboxes and radio buttons | Yes |
+| select (single and multiple) | Yes |
+| **contenteditable / rich text editors** | Yes — the content is captured when focus leaves |
+| **Shadow DOM (Web Components)** | Yes — recorded and replayed as `host >>> inner` |
+| div-based custom dropdowns | Yes — recorded as a sequence of clicks |
+| HTML5 drag and drop | Yes |
+| **Mouse-driven drags and canvas drawing** | Yes — recorded as a path of coordinates |
+| **Double-click and right-click** | Yes |
+| Key presses | Yes — Enter / Escape / Tab / arrows / F-keys / combinations with Ctrl, Alt, ⌘ |
+| **Scroll position** | Yes — both window and element |
+| File uploads | Yes — contents included |
+| Operations inside iframes | Yes |
+| **Links that open a new tab (`target="_blank"`)** | Yes — recording and replay both follow the new tab |
+| **alert / confirm / prompt** | Yes — replaced during replay and answered automatically (see below) |
+| Page transitions (including SPA history changes) | Yes |
+
+### Notes
+
+- **Key presses**: ordinary typing is not recorded (the committed value is captured separately). Only special keys and modifier combinations are.
+- **Mouse paths**: only movements of 8px or more are recorded as a path, which keeps them distinct from plain clicks. Up to 300 points per gesture.
+- **alert / confirm / prompt**: an extension cannot dismiss a browser dialog, so during replay `window.alert` and friends are replaced and **no dialog is shown**. `confirm` returns OK and `prompt` returns its default. In exported scripts, use Playwright's or Puppeteer's own dialog handling.
+- **Shadow DOM**: open shadow roots only (`mode: 'closed'` is unreachable from outside by design). Exports use Playwright's automatic piercing, or Puppeteer's `>>>` syntax.
+
+### Not supported
+
+- Shadow DOM with `mode: 'closed'`
+- Hover-only menus (clicks are recorded once the item is clickable, but the hover itself is not)
+- The copy/paste gesture itself (the resulting value is recorded)
+- The browser's back/forward buttons
 
 ## JSON is the script
 
@@ -221,6 +248,8 @@ The same thing written directly in the JSON:
 
 ### 3. Per step (when only one screen is slow)
 
+**The quickest way to add a wait** is the **＋ Wait** button that appears when you hover a row in the Steps list. Enter the number of seconds and a wait step is inserted **before** that row.
+
 Add these to any step in the JSON.
 
 | Key | Meaning |
@@ -239,15 +268,54 @@ There are also dedicated waiting steps:
 
 For a long batch job, waiting for the element that appears on completion (`waitForSelector`) is steadier than a fixed delay. Both appear in the exported Playwright / Puppeteer scripts.
 
+## One-time passwords (2FA)
+
+**A recorded code cannot be replayed.** TOTP codes rotate every 30 seconds, so the number captured at record time is already invalid by the time you replay. Codes delivered by SMS or email cannot be reproduced either.
+
+WebRec handles this as follows.
+
+1. **While recording**: one-time-code fields are detected and the value is masked as `<OTP>` — the real code is never stored. Detection looks at `autocomplete="one-time-code"` first, then falls back to words like `otp`, `totp`, `mfa`, `2fa` in the name/id/placeholder/aria-label.
+2. **Validation**: a leftover `<OTP>` is reported as an error, with the fix.
+3. **On replay**: write `{{totp:SECRET}}` and the **correct code is computed on the spot**.
+
+```json
+{ "type": "input", "selector": "#otp", "value": "{{totp:JBSWY3DPEHPK3PXP}}" }
+```
+
+The secret is the Base32 string shown when you enrol an authenticator app (printed next to the QR code, or the `secret=` parameter of the `otpauth://` URL). Lowercase, spaces and dashes are fine. For systems that use 8 digits, write `{{totp:SECRET|8}}`.
+
+**Exported Playwright / Puppeteer scripts do the same** — an implementation using Node's `crypto` is embedded and the code is computed on every run (RFC 6238, verified against the official test vectors).
+
+### Things to know
+
+- The secret is **a credential as sensitive as a password** — anyone holding it can generate codes. It is stored in the recording and embedded in JSON exports, so use it **for test accounts only** and be careful where exports go.
+- Do not embed a production account's secret.
+- If an authenticator extension (1Password, Authenticator, …) autofills the code, the number is still not stored — it is recorded as `<OTP>`. Replace it with `{{totp:...}}` the same way.
+- SMS, email and push-based verification cannot be reproduced by nature. Disable 2FA in your test environment, or use a fixed test code.
+
+## Login sessions during replay
+
+Replay opens a new window with `chrome.windows.create`. It is a normal (non-incognito) window in the **same profile**, so most things carry over.
+
+| Item | Carried over? |
+| --- | --- |
+| Cookies | Yes |
+| localStorage | Yes |
+| IndexedDB / HTTP auth | Yes |
+| **sessionStorage** | **No** — it is isolated per tab |
+
+With cookie-based login, a recording that starts from a logged-in screen replays as-is.
+
+If the site keeps its auth token in `sessionStorage`, however, the replay window counts as logged out. In that case **include the login steps in the recording** (start from the login page). You will need that anyway to run the exported script in CI. Passwords are masked as `<PASSWORD>` when recorded, so either replace the value on the JSON tab, or use `{{data.password}}` and manage it from the Data tab.
+
 ## Where the data lives
 
 Recordings are stored in IndexedDB (`webrec-db`) in your browser profile. Nothing is ever sent to an external server.
 
 ## Known limitations
 
-- Recording is limited to one tab (switching tabs after starting does not record the other tab).
+- Recording is primarily one tab, though a new tab opened by the page (`target="_blank"`) is followed automatically. Tabs you switch to yourself are not.
 - Cross-origin iframes cannot be located, so recording and replay there are incomplete.
-- Drag and drop is supported only where the page uses HTML5 drag events (not mousedown/mousemove implementations).
 - Password fields (`type="password"`) are masked as `<PASSWORD>`; the real value is never stored.
 - Selectors are generated in the order `data-testid` / `id` / `name` / `aria-label` / CSS path, so pages with highly dynamic DOM structures may replay less reliably.
 - The built-in replay is deliberately simple. For complex SPAs, exporting the Playwright / Puppeteer script and running it under Node.js is recommended.

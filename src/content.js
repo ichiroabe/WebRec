@@ -12,6 +12,8 @@
   let recording = false;
   let overlayEl = null;
   let dragSource = null;
+  let suppressNextClick = false; // ドラッグ直後の click を捨てるためのフラグ
+  let suppressClickTimer = null;
 
   // content script は module ではないため i18n.js を import できない。
   // オーバーレイで使う2語だけをここに持つ。
@@ -41,15 +43,28 @@
     return String(str).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c);
   }
 
-  function isUnique(sel) {
+  // Shadow DOM 対応: セレクタは「ホストを辿る道のり」を >>> で繋いだ形にする。
+  // 例: my-field#host >>> #innerInput
+  // document.querySelector は shadowRoot を貫通しないため、区間ごとに解決する。
+  const SHADOW_SEP = ' >>> ';
+
+  // 要素が属するツリーの根（document か ShadowRoot）
+  function rootOf(el) {
+    const root = el.getRootNode ? el.getRootNode() : document;
+    return root || document;
+  }
+
+  function isUnique(sel, root) {
     try {
-      return document.querySelectorAll(sel).length === 1;
+      return (root || document).querySelectorAll(sel).length === 1;
     } catch (_) {
       return false;
     }
   }
 
-  function buildCssPath(el) {
+  // 同じツリー内（document か 1 つの shadowRoot 内）でのパスを組み立てる
+  function buildCssPath(el, root) {
+    const stop = root && root.host ? root : document;
     const parts = [];
     let node = el;
     while (node && node.nodeType === Node.ELEMENT_NODE && node !== document.documentElement) {
@@ -68,34 +83,49 @@
       }
       parts.unshift(part);
       node = node.parentElement;
+      if (stop !== document && node === stop.host) break; // shadowRoot の境目で止める
     }
     return parts.join(' > ');
   }
 
-  function getSelector(el) {
-    if (!(el instanceof Element)) return null;
+  // 1 つのツリー内で要素を特定するセレクタ
+  function selectorWithin(el, root) {
     for (const attr of ['data-testid', 'data-test', 'data-qa', 'data-cy']) {
       const v = el.getAttribute(attr);
       if (v) {
         const sel = `[${attr}="${cssEscape(v)}"]`;
-        if (isUnique(sel)) return sel;
+        if (isUnique(sel, root)) return sel;
       }
     }
     if (el.id) {
       const sel = `#${cssEscape(el.id)}`;
-      if (isUnique(sel)) return sel;
+      if (isUnique(sel, root)) return sel;
     }
     const name = el.getAttribute('name');
     if (name) {
       const sel = `${el.tagName.toLowerCase()}[name="${cssEscape(name)}"]`;
-      if (isUnique(sel)) return sel;
+      if (isUnique(sel, root)) return sel;
     }
     const aria = el.getAttribute('aria-label');
     if (aria) {
       const sel = `[aria-label="${cssEscape(aria)}"]`;
-      if (isUnique(sel)) return sel;
+      if (isUnique(sel, root)) return sel;
     }
-    return buildCssPath(el);
+    return buildCssPath(el, root);
+  }
+
+  // shadow root をまたぐ場合は、ホストごとのセレクタを >>> で連ねる
+  function getSelector(el) {
+    if (!(el instanceof Element)) return null;
+    const segments = [];
+    let node = el;
+    for (let guard = 0; guard < 20; guard++) {
+      const root = rootOf(node);
+      segments.unshift(selectorWithin(node, root));
+      if (!root || !root.host) break; // document に到達
+      node = root.host;
+    }
+    return segments.join(SHADOW_SEP);
   }
 
   // iframe 内の要素を再生時に再び特定できるよう、最上位から自フレームまでの
@@ -152,6 +182,36 @@
     return el instanceof Element && !!el.closest('#__webrec_overlay__');
   }
 
+  // ワンタイムパスワード欄の判定。
+  // 標準の autocomplete="one-time-code" を第一に見て、無い場合は
+  // name/id/placeholder/aria-label の語で推定する。
+  // 「セキュリティコード」はカードの CVV と紛らわしいため意図的に含めていない
+  const OTP_HINT = /(^|[^a-z])(otp|totp|mfa|2fa|onetime|one[-_]?time|verification[-_]?code|auth[-_]?code)/i;
+  const OTP_HINT_JA = /(ワンタイム|認証コード|確認コード)/;
+
+  function isOneTimeCodeField(el) {
+    const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase();
+    if (autocomplete.includes('one-time-code')) return true;
+    const hints = [
+      el.getAttribute('name'),
+      el.id,
+      el.getAttribute('placeholder'),
+      el.getAttribute('aria-label'),
+      el.getAttribute('data-testid'),
+    ]
+      .filter(Boolean)
+      .join(' ');
+    return OTP_HINT.test(hints) || OTP_HINT_JA.test(hints);
+  }
+
+  // shadow DOM 内で起きたイベントは e.target がホストに付け替えられるため、
+  // composedPath() の先頭（実際に操作された要素）を使う。
+  function realTarget(e) {
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+    const first = path && path.length ? path[0] : e.target;
+    return first instanceof Element ? first : e.target instanceof Element ? e.target : null;
+  }
+
   function send(step) {
     const frames = getFrameChain();
     chrome.runtime
@@ -163,9 +223,17 @@
   }
 
   function onClick(e) {
-    const raw = e.target;
-    if (!(raw instanceof Element)) return;
+    const raw = realTarget(e);
+    if (!raw) return;
     if (isOwnUi(raw)) return;
+    if (suppressNextClick) {
+      suppressNextClick = false; // ドラッグ操作として記録済み
+      if (suppressClickTimer) {
+        clearTimeout(suppressClickTimer);
+        suppressClickTimer = null;
+      }
+      return;
+    }
     const target = closestClickable(raw);
     const tag = target.tagName.toLowerCase();
     // テキスト入力系は click だけでは意味がある操作にならないためスキップ（input/change 側で拾う）
@@ -183,8 +251,8 @@
   }
 
   function onChange(e) {
-    const target = e.target;
-    if (!(target instanceof Element)) return;
+    const target = realTarget(e);
+    if (!target) return;
     if (isOwnUi(target)) return;
     const tag = target.tagName.toLowerCase();
     if (tag === 'select') {
@@ -209,7 +277,9 @@
         recordFileInput(target, selector);
         return;
       }
-      const value = type === 'password' ? '<PASSWORD>' : target.value;
+      // ワンタイムパスワードは記録しても30秒で無効になるうえ、
+      // 認証情報そのものなので保存しない。{{totp:...}} に書き換えて使う。
+      const value = type === 'password' ? '<PASSWORD>' : isOneTimeCodeField(target) ? '<OTP>' : target.value;
       send({ type: 'input', selector, value });
       return;
     }
@@ -260,22 +330,170 @@
     send({ type: 'upload', selector, files });
   }
 
+  // 修飾キー単体は記録しない（Shift を押しただけ等）
+  const MODIFIER_ONLY = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock']);
+
   function onKeyDown(e) {
-    if (e.key !== 'Enter' && e.key !== 'Escape') return;
-    const target = e.target;
-    if (!(target instanceof Element)) return;
+    const target = realTarget(e);
+    if (!target) return;
     if (isOwnUi(target)) return;
+    if (MODIFIER_ONLY.has(e.key)) return;
+
+    const withModifier = e.ctrlKey || e.altKey || e.metaKey;
+    const isSpecial = e.key.length > 1; // Enter, Tab, ArrowDown, F5 ...
+
+    // 通常の文字入力は change で確定値を拾うので記録しない
+    if (!withModifier && !isSpecial) return;
+
+    // 文字入力中の Backspace / Delete も change に含まれるため冗長
     const tag = target.tagName.toLowerCase();
-    if (tag !== 'input' && tag !== 'textarea') return;
+    const isTextField = tag === 'textarea' || (tag === 'input' && !/^(checkbox|radio|button|submit)$/i.test(target.type || ''));
+    if (!withModifier && isTextField && (e.key === 'Backspace' || e.key === 'Delete')) return;
+
     const selector = getSelector(target);
     if (!selector) return;
-    send({ type: 'keydown', selector, key: e.key });
+
+    const step = { type: 'keydown', selector, key: e.key };
+    if (e.ctrlKey) step.ctrlKey = true;
+    if (e.altKey) step.altKey = true;
+    if (e.shiftKey) step.shiftKey = true;
+    if (e.metaKey) step.metaKey = true;
+    send(step);
+  }
+
+  // --- ダブルクリック ---
+  // click が2回先に送られているので、背景側でそれらを取り消してもらう
+  function onDblClick(e) {
+    const raw = realTarget(e);
+    if (!raw) return;
+    if (isOwnUi(raw)) return;
+    const target = closestClickable(raw);
+    const selector = getSelector(target);
+    if (!selector) return;
+    send({ type: 'dblclick', selector, text: visibleText(target), replacesClicks: 2 });
+  }
+
+  // --- 右クリック ---
+  function onContextMenu(e) {
+    const raw = realTarget(e);
+    if (!raw) return;
+    if (isOwnUi(raw)) return;
+    const target = closestClickable(raw);
+    const selector = getSelector(target);
+    if (!selector) return;
+    send({ type: 'contextmenu', selector, text: visibleText(target) });
+  }
+
+  // --- contenteditable（リッチテキストエディタ） ---
+  // change イベントが無いので、フォーカスが外れた時点の内容を確定値として記録する。
+  let editableTarget = null;
+  let editableBefore = null;
+
+  function editableRoot(el) {
+    if (!(el instanceof Element)) return null;
+    const host = el.closest('[contenteditable=""], [contenteditable="true"]');
+    return host && host.isContentEditable ? host : null;
+  }
+
+  function onFocusIn(e) {
+    const host = editableRoot(realTarget(e));
+    if (!host || isOwnUi(host)) return;
+    editableTarget = host;
+    editableBefore = host.innerHTML;
+  }
+
+  function onFocusOut() {
+    if (!editableTarget) return;
+    const host = editableTarget;
+    const before = editableBefore;
+    editableTarget = null;
+    editableBefore = null;
+    if (host.innerHTML === before) return; // 変化なし
+    const selector = getSelector(host);
+    if (!selector) return;
+    send({ type: 'editable', selector, html: host.innerHTML, text: (host.innerText || '').slice(0, 80) });
+  }
+
+  // --- スクロール位置 ---
+  // 遅延読み込みの画面で「見えていないと操作できない」ことがあるため記録する。
+  let scrollTimer = null;
+
+  function onScroll(e) {
+    if (scrollTimer) clearTimeout(scrollTimer);
+    const t = e.target;
+    scrollTimer = setTimeout(() => {
+      scrollTimer = null;
+      if (t === document || t === document.documentElement || t === document.body) {
+        send({ type: 'scroll', x: Math.round(window.scrollX), y: Math.round(window.scrollY) });
+        return;
+      }
+      if (!(t instanceof Element) || isOwnUi(t)) return;
+      const selector = getSelector(t);
+      if (!selector) return;
+      send({ type: 'scroll', selector, x: Math.round(t.scrollLeft), y: Math.round(t.scrollTop) });
+    }, 400);
+  }
+
+  // --- マウスの軌跡（canvas への描画、mousedown 実装のドラッグ） ---
+  // HTML5 の drag イベントを使わない実装でも再現できるよう、座標の列を残す。
+  const DRAG_THRESHOLD_PX = 8;
+  let pathPoints = null;
+  let pathTarget = null;
+
+  function localPoint(el, e) {
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(e.clientX - r.left), y: Math.round(e.clientY - r.top) };
+  }
+
+  function onMouseDown(e) {
+    if (e.button !== 0) return;
+    const target = realTarget(e);
+    if (!target || isOwnUi(target)) return;
+    pathTarget = target;
+    pathPoints = [localPoint(target, e)];
+  }
+
+  function onMouseMove(e) {
+    if (!pathTarget || !pathPoints) return;
+    const p = localPoint(pathTarget, e);
+    const last = pathPoints[pathPoints.length - 1];
+    if (Math.abs(p.x - last.x) < 2 && Math.abs(p.y - last.y) < 2) return; // 間引く
+    if (pathPoints.length < 300) pathPoints.push(p);
+  }
+
+  function onMouseUp(e) {
+    if (!pathTarget || !pathPoints) return;
+    const target = pathTarget;
+    const points = pathPoints;
+    pathTarget = null;
+    pathPoints = null;
+
+    const first = points[0];
+    const last = localPoint(target, e);
+    const moved = Math.abs(last.x - first.x) + Math.abs(last.y - first.y);
+    if (moved < DRAG_THRESHOLD_PX || points.length < 2) return; // ただのクリック
+
+    if (dragSource) return; // HTML5 D&D 側で記録済み
+
+    const selector = getSelector(target);
+    if (!selector) return;
+    points.push(last);
+    // 直後の click は同じ操作なので捨てる。click が来ない場合に備えて自動で解除する。
+    suppressNextClick = true;
+    if (suppressClickTimer) clearTimeout(suppressClickTimer);
+    suppressClickTimer = setTimeout(() => {
+      suppressNextClick = false;
+      suppressClickTimer = null;
+    }, 500);
+    send({ type: 'pointerPath', selector, points });
   }
 
   // --- HTML5 ドラッグ&ドロップ（左右リスト間の移動などで使われる） ---
   function onDragStart(e) {
     const target = e.target;
     if (isOwnUi(target)) return;
+    pathTarget = null; // HTML5 D&D 側で記録するので軌跡は捨てる
+    pathPoints = null;
     dragSource = target instanceof Element ? getSelector(target) : null;
   }
 
@@ -347,6 +565,14 @@
     document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('dragstart', onDragStart, true);
     document.addEventListener('drop', onDrop, true);
+    document.addEventListener('dblclick', onDblClick, true);
+    document.addEventListener('contextmenu', onContextMenu, true);
+    document.addEventListener('focusin', onFocusIn, true);
+    document.addEventListener('focusout', onFocusOut, true);
+    document.addEventListener('scroll', onScroll, true);
+    document.addEventListener('mousedown', onMouseDown, true);
+    document.addEventListener('mousemove', onMouseMove, true);
+    document.addEventListener('mouseup', onMouseUp, true);
     if (!IS_TOP) return; // オーバーレイは最上位フレームだけに表示する
     if (document.body) ensureOverlay();
     else document.addEventListener('DOMContentLoaded', ensureOverlay, { once: true });
@@ -358,12 +584,25 @@
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('change', onChange, true);
     document.removeEventListener('keydown', onKeyDown, true);
+    document.removeEventListener('dblclick', onDblClick, true);
+    document.removeEventListener('contextmenu', onContextMenu, true);
+    document.removeEventListener('focusin', onFocusIn, true);
+    document.removeEventListener('focusout', onFocusOut, true);
+    document.removeEventListener('scroll', onScroll, true);
+    document.removeEventListener('mousedown', onMouseDown, true);
+    document.removeEventListener('mousemove', onMouseMove, true);
+    document.removeEventListener('mouseup', onMouseUp, true);
     document.removeEventListener('dragstart', onDragStart, true);
     document.removeEventListener('drop', onDrop, true);
     removeOverlay();
   }
 
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // 生存確認。background 側はこれに応答があるかで注入済みかを判断する。
+    if (message.type === 'WEBREC_PING') {
+      sendResponse({ ok: true });
+      return;
+    }
     if (message.type === 'WEBREC_START') startListening();
     if (message.type === 'WEBREC_STOP') stopListening();
   });
