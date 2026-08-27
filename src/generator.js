@@ -693,7 +693,9 @@ export function generateScript(rec, format) {
   return generateJson(rec);
 }
 
-export function stepSummary(step) {
+export function stepSummary(rawStep) {
+  // selectors だけを手で書いた場合でも表示が undefined にならないようにする
+  const step = { ...rawStep, selector: primarySelector(rawStep) };
   const inFrame =
     step.frames && step.frames.length
       ? t('step.inFrame', { frames: step.frames.map((f) => (typeof f === 'string' ? f : f.url)).join(' > ') })

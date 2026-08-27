@@ -12,10 +12,32 @@ const MAX_RUNS = 100;
 
 let dbPromise = null;
 
+// DB のバージョンを上げるときは、他のタブが古いバージョンで開いたままだと
+// upgrade が blocked になり、open が永久に返らない。
+// 返らないまま待つと再生ごと止まってしまうため、必ず時間で見切る。
+const OPEN_TIMEOUT_MS = 8000;
+
 function openDb() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
+    let blocked = false;
+    const timer = setTimeout(() => {
+      reject(
+        new Error(
+          blocked
+            ? 'IndexedDB の更新が他のタブに邪魔されています。WebRec の管理画面を開いている他のタブを閉じてから、もう一度お試しください。'
+            : 'IndexedDB を開けませんでした'
+        )
+      );
+    }, OPEN_TIMEOUT_MS);
+    const settle = (fn, value) => {
+      clearTimeout(timer);
+      fn(value);
+    };
     const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onblocked = () => {
+      blocked = true; // 他の接続が閉じれば onsuccess が来る。来なければ上のタイマーで諦める
+    };
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
@@ -30,8 +52,12 @@ function openDb() {
         runs.createIndex('startedAt', 'startedAt', { unique: false });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => settle(resolve, req.result);
+    req.onerror = () => settle(reject, req.error);
+  });
+  // 失敗したら次の呼び出しでやり直せるようにする（一度きりの失敗を引きずらない）
+  dbPromise.catch(() => {
+    dbPromise = null;
   });
   return dbPromise;
 }

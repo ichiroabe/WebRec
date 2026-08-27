@@ -203,6 +203,10 @@ const MESSAGES = {
     'replay.warned': ' (任意ステップのため続行: {error})',
     'replay.skipped': ' (スキップ)',
     'replay.error': '再生中にエラーが発生しました: {error}',
+    'replay.noResponse':
+      '拡張機能のバックグラウンドから応答がありません。chrome://extensions で WebRec を再読み込みし、'
+      + '他に開いている WebRec の管理画面タブを閉じてから、もう一度お試しください。',
+    'replay.disconnected': '再生の接続が切れました（この画面を閉じた・拡張機能が再読み込みされた等）。',
     'replay.usedFallback': ' (代替セレクタで特定: {selector})',
 
     // --- 実行ログ ---
@@ -529,6 +533,9 @@ const MESSAGES = {
     'replay.warned': ' (optional step, continuing: {error})',
     'replay.skipped': ' (skipped)',
     'replay.error': 'An error occurred during replay: {error}',
+    'replay.noResponse':
+      'No response from the extension background. Reload WebRec on chrome://extensions, close any other WebRec manager tabs, and try again.',
+    'replay.disconnected': 'The replay connection was lost (this page was closed, or the extension was reloaded).',
     'replay.usedFallback': ' (found via fallback selector: {selector})',
 
     // --- Run log ---

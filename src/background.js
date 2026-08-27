@@ -797,6 +797,24 @@ async function executeStepWithRetry(tabId, step, cfg) {
 let currentRun = null;
 let runSaveTimer = null;
 
+// 実行ログは「おまけ」なので、これが詰まっても再生は止めない。
+// IndexedDB が開けない・遅いといった理由で待ち続けないよう、必ず時間で見切る。
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(undefined), ms)),
+  ]);
+}
+
+function saveRunSafely(run) {
+  return withTimeout(
+    saveRun(run).catch((err) => {
+      console.warn('WebRec: failed to save run log', err);
+    }),
+    3000
+  );
+}
+
 function beginRun(rec, opts, rowCount) {
   currentRun = {
     id: crypto.randomUUID(),
@@ -816,7 +834,8 @@ function beginRun(rec, opts, rowCount) {
     dialogs: [],
     error: null,
   };
-  return flushRun(true);
+  // 保存の完了は待たない（ここで待つと、ログが書けないだけで再生が始まらなくなる）
+  flushRun(true);
 }
 
 // 保存は 1 秒に 1 回までに間引く（ステップごとに書くと IndexedDB が忙しくなる）
@@ -826,10 +845,10 @@ function flushRun(immediate) {
     clearTimeout(runSaveTimer);
     runSaveTimer = null;
   }
-  if (immediate) return saveRun({ ...currentRun }).catch(() => {});
+  if (immediate) return saveRunSafely({ ...currentRun });
   runSaveTimer = setTimeout(() => {
     runSaveTimer = null;
-    if (currentRun) saveRun({ ...currentRun }).catch(() => {});
+    if (currentRun) saveRunSafely({ ...currentRun });
   }, 1000);
   return Promise.resolve();
 }
@@ -886,16 +905,19 @@ async function finishRun(status, error) {
 async function collectDialogs(tabId, stepIndex) {
   if (!currentRun) return;
   try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      world: 'MAIN',
-      func: () => {
-        const list = window.__webrecDialogs || [];
-        window.__webrecDialogs = [];
-        return list;
-      },
-    });
-    for (const r of results) {
+    const results = await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        world: 'MAIN',
+        func: () => {
+          const list = window.__webrecDialogs || [];
+          window.__webrecDialogs = [];
+          return list;
+        },
+      }),
+      3000
+    );
+    for (const r of results || []) {
       for (const d of Array.isArray(r.result) ? r.result : []) {
         currentRun.dialogs.push({ ...d, stepIndex, at: Date.now() });
       }
@@ -948,7 +970,7 @@ async function runReplay(id, onProgress, opts) {
   const keepUrl = !!opts.keepCurrentUrl;
   const startAt = Number.isFinite(opts.startAtIndex) ? Math.max(0, opts.startAtIndex) : 0;
 
-  await beginRun(rec, opts, rows.length);
+  beginRun(rec, opts, rows.length);
   // 進捗は画面と実行ログの両方へ流す
   const report = (progress) => {
     logProgress(progress);
@@ -1084,6 +1106,10 @@ async function runReplay(id, onProgress, opts) {
 // chrome.alarms で定期的に再生する。ブラウザが起動している間だけ動く。
 // 予定は chrome.storage.local に持ち、変更のたびにアラームを作り直す。
 
+// alarms 権限が反映されていない状態で読み込まれると chrome.alarms が無い。
+// 例外を投げると service worker 全体が起動に失敗し、記録も再生も動かなくなる。
+const alarmsAvailable = typeof chrome !== 'undefined' && !!chrome.alarms;
+
 const SCHEDULE_KEY = 'webrec_schedules';
 const ALARM_PREFIX = 'webrec-run:';
 
@@ -1126,6 +1152,7 @@ function nextDailyTime(hhmm) {
 }
 
 async function syncAlarms(list) {
+  if (!alarmsAvailable) return;
   const schedules = list || (await getSchedules());
   const existing = await chrome.alarms.getAll();
   for (const alarm of existing) {
@@ -1170,20 +1197,24 @@ async function runScheduled(scheduleId) {
   );
 }
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (!alarm.name.startsWith(ALARM_PREFIX)) return;
-  runScheduled(alarm.name.slice(ALARM_PREFIX.length)).catch((err) =>
-    console.warn('WebRec: schedule error', err)
-  );
-});
+if (!alarmsAvailable) {
+  console.warn('WebRec: chrome.alarms is unavailable; schedules are disabled');
+} else {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (!alarm.name.startsWith(ALARM_PREFIX)) return;
+    runScheduled(alarm.name.slice(ALARM_PREFIX.length)).catch((err) =>
+      console.warn('WebRec: schedule error', err)
+    );
+  });
 
-// 拡張機能の更新やブラウザ再起動でアラームが失われることがあるので張り直す
-chrome.runtime.onStartup.addListener(() => {
-  syncAlarms().catch(() => {});
-});
-chrome.runtime.onInstalled.addListener(() => {
-  syncAlarms().catch(() => {});
-});
+  // 拡張機能の更新やブラウザ再起動でアラームが失われることがあるので張り直す
+  chrome.runtime.onStartup.addListener(() => {
+    syncAlarms().catch(() => {});
+  });
+  chrome.runtime.onInstalled.addListener(() => {
+    syncAlarms().catch(() => {});
+  });
+}
 
 // --- メッセージルーティング ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

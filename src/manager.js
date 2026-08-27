@@ -1369,8 +1369,30 @@ function startReplay(rec, opts = {}) {
   replayModal.classList.remove('hidden');
 
   const port = chrome.runtime.connect({ name: 'replay' });
+
+  // バックグラウンドから最初の応答が来ないまま黙って止まると、
+  // 「再生中」の表示だけが残って原因が分からない。一定時間で気づけるようにする。
+  let gotProgress = false;
+  let finished = false;
+  const noteToUser = (text) => {
+    const li = document.createElement('li');
+    li.className = 'error';
+    li.textContent = text;
+    replayList.appendChild(li);
+    li.scrollIntoView({ block: 'nearest' });
+  };
+  const watchdog = setTimeout(() => {
+    if (!gotProgress && !finished) noteToUser(t('replay.noResponse'));
+  }, 20000);
+
+  port.onDisconnect.addListener(() => {
+    clearTimeout(watchdog);
+    if (!finished) noteToUser(t('replay.disconnected'));
+  });
+
   port.onMessage.addListener((msg) => {
     if (msg.type === 'PROGRESS') {
+      gotProgress = true;
       if (msg.status === 'complete') return;
 
       // 行の開始/終了の通知
@@ -1393,7 +1415,13 @@ function startReplay(rec, opts = {}) {
       if (msg.status === 'warned') li.textContent += t('replay.warned', { error: msg.error });
       if (msg.status === 'skipped') li.textContent += t('replay.skipped');
       if (msg.status === 'done' && msg.fallback) li.textContent += t('replay.usedFallback', { selector: msg.fallback });
+    } else if (msg.type === 'DONE') {
+      finished = true;
+      clearTimeout(watchdog);
     } else if (msg.type === 'ERROR') {
+      finished = true;
+      clearTimeout(watchdog);
+      noteToUser(t('replay.failed', { error: msg.error }).trim());
       alert(t('replay.error', { error: msg.error }));
     }
   });
