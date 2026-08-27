@@ -163,9 +163,14 @@
 
     if (!out.includes(primary)) out.push(primary); // 位置パス（最後の砦）
 
-    // 表示テキスト。入力欄の value を拾ってしまわないよう innerText / aria-label だけを見る
-    const label = (el.innerText || '').trim() || (el.getAttribute('aria-label') || '').trim();
-    if (label) out.push(textSelector(tag, label.slice(0, 60)));
+    // 表示テキスト。リンクやボタンのように「文字で指せる」要素だけを対象にする。
+    // select や textarea の innerText は選択肢や入力内容なので、指す手掛かりにならない。
+    const TEXTLESS = ['select', 'textarea', 'input', 'option', 'iframe', 'frame', 'canvas'];
+    if (!TEXTLESS.includes(tag)) {
+      const label = (el.innerText || '').trim() || (el.getAttribute('aria-label') || '').trim();
+      // 複数行に渡るものは要素の「名前」ではないので候補にしない
+      if (label && !label.includes('\n')) out.push(textSelector(tag, label.slice(0, 60)));
+    }
     return out;
   }
 
