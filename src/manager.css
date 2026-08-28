@@ -297,6 +297,12 @@ td.url-cell {
   color: #b45309;
 }
 
+.step-delete-btn:hover {
+  background: #fef2f2;
+  border-color: #dc2626;
+  color: #b91c1c;
+}
+
 .file-save-btn {
   margin-left: 8px;
   border: 1px solid #d1d5db;

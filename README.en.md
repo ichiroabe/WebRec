@@ -254,6 +254,17 @@ The same thing written directly in the JSON:
 
 **The quickest way to add a wait** is the **＋ Wait** button that appears when you hover a row in the Steps list. Enter the number of seconds and a wait step is inserted **before** that row.
 
+Hovering a row also reveals these:
+
+| Button | What it does |
+| --- | --- |
+| **＋ Wait** | insert a wait before this row |
+| **＋ Assert** | insert an assertion after this row |
+| **⃠ Disable / ↺ Enable** | skip this step without removing it, or bring it back |
+| **✕ Delete** | remove this step (asks first; cannot be undone) |
+
+Disabling first is the safer move: you can see the effect before deleting. Disabled rows are shown struck through.
+
 Add these to any step in the JSON.
 
 | Key | Meaning |
@@ -398,7 +409,7 @@ npm install
 npm test
 ```
 
-22 suites run, each in its own process. Pass part of a name to narrow it down.
+23 suites run, each in its own process. Pass part of a name to narrow it down.
 
 ```bash
 npm test -- totp

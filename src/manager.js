@@ -223,6 +223,39 @@ function renderTemplateHelp() {
   }
 }
 
+// ステップを1件消す。取り消せないので確認を挟む。
+async function deleteStep(index) {
+  const rec = getCurrentRecording();
+  if (!rec || !rec.steps[index]) return;
+
+  const summary = stepSummary(rec.steps[index]);
+  if (!confirm(t('steps.deleteStepConfirm', { n: index + 1, summary }))) return;
+
+  const steps = rec.steps.filter((_, i) => i !== index);
+  await updateRecording(rec.id, { steps });
+  await refreshList();
+  await renderDetail();
+  flashCopyMsg(t('steps.deleteStepDone', { n: index + 1 }));
+}
+
+// ステップを消さずに飛ばす／戻す。消す前に影響を試せるようにしておく。
+async function toggleStepDisabled(index) {
+  const rec = getCurrentRecording();
+  if (!rec || !rec.steps[index]) return;
+
+  const steps = rec.steps.map((st, i) => {
+    if (i !== index) return st;
+    const next = { ...st };
+    if (next.disabled) delete next.disabled; // 既定に戻すので値は残さない
+    else next.disabled = true;
+    return next;
+  });
+  await updateRecording(rec.id, { steps });
+  await refreshList();
+  await renderDetail();
+  flashCopyMsg(steps[index].disabled ? t('steps.disableDone') : t('steps.enableDone'));
+}
+
 // ステップ一覧から待機ステップを差し込む（JSON を手で書かなくて済むように）
 async function insertWaitBefore(index) {
   const rec = getCurrentRecording();
@@ -619,6 +652,27 @@ async function renderDetail() {
         });
         li.appendChild(assertBtn);
       }
+
+      // 一時的に外して試したいときのための切り替え（消さずに飛ばせる）
+      const toggleBtn = document.createElement('button');
+      toggleBtn.className = 'insert-wait-btn';
+      toggleBtn.textContent = step.disabled ? t('steps.enable') : t('steps.disable');
+      toggleBtn.title = step.disabled ? t('steps.enableTitle') : t('steps.disableTitle');
+      toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleStepDisabled(index);
+      });
+      li.appendChild(toggleBtn);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'insert-wait-btn step-delete-btn';
+      deleteBtn.textContent = t('steps.deleteStep');
+      deleteBtn.title = t('steps.deleteStepTitle');
+      deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteStep(index);
+      });
+      li.appendChild(deleteBtn);
 
       if (step.disabled) li.classList.add('step-disabled');
       li.addEventListener('click', () => revealInJson(index));
