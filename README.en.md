@@ -38,6 +38,30 @@ Japanese and English are both supported. Switch with the selector in the manager
 3. Press **■ Stop and save** in the popup, or **■ Stop** on the on-page indicator
 4. Open the manager to view, export or replay what you recorded
 
+## Automatic tidy-up after recording
+
+When you stop recording, **consecutive repeats of the same action are collapsed into the last one**. This happens after the fact rather than during recording, so the raw sequence can be reprocessed with different rules.
+
+| Collapsed | Example |
+| --- | --- |
+| Consecutive inputs on one field | typed, left, came back and typed again → only the final value |
+| Consecutive scrolls | scrolled in bursts → only the final position |
+| Consecutive selections on one select | → only the final choice |
+| Consecutive edits of one rich-text area | → only the final content |
+
+Some things are never collapsed:
+
+- **Clicks, key presses, navigations and uploads** — each one means something on its own
+- **Anything with a step in between** — "type → search → type again" keeps both
+- **The same selector in a different frame** — treated as a different element
+- **Steps carrying `disabled` / `optional` / `waitBeforeMs` / `timeoutMs`** — your edits are not thrown away
+
+The **Tidy up** button in the Steps list runs it again at any time — useful after importing a recording or editing the JSON by hand. Running it repeatedly changes nothing.
+
+### One caveat
+
+In a tag/chip input, where leaving the field *adds* an entry, consecutive inputs each mean something different. Collapsing them would lose the earlier entries. Check the Steps list after recording such a page (in practice a click or key press usually falls between them, so they are not collapsed).
+
 ## Supported input patterns
 
 | Category | Supported |
@@ -409,7 +433,7 @@ npm install
 npm test
 ```
 
-23 suites run, each in its own process. Pass part of a name to narrow it down.
+24 suites run, each in its own process. Pass part of a name to narrow it down.
 
 ```bash
 npm test -- totp

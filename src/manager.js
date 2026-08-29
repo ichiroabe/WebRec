@@ -20,6 +20,7 @@ import {
 import { getSettings, saveSettings, resetSettings, SETTING_FIELDS, peekSeq, setNextSeq } from './settings.js';
 import { previewTemplate, TEMPLATE_HELP, helpSyntax } from './template.js';
 import { validateRecording, summarize } from './validate.js';
+import { normalizeSteps } from './normalize.js';
 import { initI18n, applyI18n, t, getLang, setLang, LANGS } from './i18n.js';
 
 const recordingsBody = document.getElementById('recordingsBody');
@@ -149,6 +150,7 @@ const jsonError = document.getElementById('jsonError');
 const saveJsonBtn = document.getElementById('saveJsonBtn');
 const revertJsonBtn = document.getElementById('revertJsonBtn');
 const validateBtn = document.getElementById('validateBtn');
+const tidyBtn = document.getElementById('tidyBtn');
 const validationBox = document.getElementById('validationBox');
 const validationSummary = document.getElementById('validationSummary');
 const validationList = document.getElementById('validationList');
@@ -221,6 +223,25 @@ function renderTemplateHelp() {
     tr.append(code, desc, now);
     table.appendChild(tr);
   }
+}
+
+// 記録後の整理をもう一度かける。
+// 停止時に一度かけているが、JSON を手で編集したりインポートしたりした後にも使える。
+async function tidySteps() {
+  const rec = getCurrentRecording();
+  if (!rec) return;
+
+  const tidy = normalizeSteps(rec.steps);
+  if (!tidy.removed) {
+    flashCopyMsg(t('steps.tidyNothing'));
+    return;
+  }
+  if (!confirm(t('steps.tidyConfirm', { n: tidy.removed }))) return;
+
+  await updateRecording(rec.id, { steps: tidy.steps });
+  await refreshList();
+  await renderDetail();
+  flashCopyMsg(t('steps.tidyDone', { n: tidy.removed }));
 }
 
 // ステップを1件消す。取り消せないので確認を挟む。
@@ -559,6 +580,7 @@ async function renderDetail() {
   saveJsonBtn.classList.toggle('hidden', !isJson);
   revertJsonBtn.classList.toggle('hidden', !isJson);
   validateBtn.classList.toggle('hidden', !isJson);
+  tidyBtn.classList.toggle('hidden', !isSteps); // 整理はステップ一覧から行う
   saveRecSettingsBtn.classList.toggle('hidden', !isRecSettings);
   clearRecSettingsBtn.classList.toggle('hidden', !isRecSettings);
   saveDatasetBtn.classList.toggle('hidden', !isDataset);
@@ -701,6 +723,10 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
 
 document.getElementById('closeDetail').addEventListener('click', () => {
   detailModal.classList.add('hidden');
+});
+
+tidyBtn.addEventListener('click', () => {
+  tidySteps();
 });
 
 validateBtn.addEventListener('click', () => {

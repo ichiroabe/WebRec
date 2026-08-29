@@ -8,6 +8,7 @@ import { saveRecording, getRecording, saveFile, getFile, saveRun, pruneRuns } fr
 import { getSettings, effectiveSettings, nextSeq } from './settings.js';
 import { resolveStepTemplates, resolveStepTotp } from './template.js';
 import { stepSummary } from './generator.js';
+import { normalizeSteps } from './normalize.js';
 import { initI18n, t, getLang } from './i18n.js';
 
 // service worker が起きたら文言を確定させておく
@@ -118,16 +119,20 @@ async function stopRecording() {
   await setBadge(finished.tabId, false);
   await notifyTab(finished.tabId, { type: 'WEBREC_STOP' });
 
+  // 記録し終えてから整理する。記録中に間引くと条件を変えられないため、
+  // 生のまま貯めておいて、ここでまとめて畳む。
+  const tidy = normalizeSteps(finished.steps);
+
   const rec = {
     id: finished.id,
     name: finished.name,
     startUrl: finished.startUrl,
-    steps: finished.steps,
+    steps: tidy.steps,
     createdAt: finished.startedAt,
     updatedAt: Date.now(),
   };
   await saveRecording(rec);
-  return { ok: true, id: rec.id, stepCount: rec.steps.length };
+  return { ok: true, id: rec.id, stepCount: rec.steps.length, normalized: tidy.removed };
 }
 
 // アップロードされたファイルの中身は IndexedDB へ逃がし、ステップには参照だけ残す。
