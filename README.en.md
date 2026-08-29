@@ -465,6 +465,10 @@ npm run serve
 
 Sample files for upload testing live in `test/fixtures/samples/`.
 
+## Under consideration
+
+A design note on connecting web and local work is in [docs/automation-plan.md](docs/automation-plan.md) (Japanese).
+
 ## Where the data lives
 
 Recordings, uploaded file contents and the run log all live in IndexedDB (`webrec-db`) in your browser profile; schedules and the language setting live in `chrome.storage.local`. Nothing is ever sent to an external server.

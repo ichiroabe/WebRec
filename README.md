@@ -196,6 +196,10 @@ npm run serve
 
 アップロード用のサンプルは `test/fixtures/samples/` にあります。
 
+## 検討中の構想
+
+Web作業とローカル作業をつなぐ仕組みを検討しています。詳細は [docs/automation-plan.md](docs/automation-plan.md) を参照してください。
+
 ## データの保存場所
 
 録画データ・アップロードしたファイルの中身・実行ログは、いずれもブラウザのプロファイル内 IndexedDB（`webrec-db`）に保存されます。スケジュールと表示設定は `chrome.storage.local` です。外部サーバーへの送信は一切行いません。
