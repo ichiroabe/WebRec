@@ -84,14 +84,15 @@ In a tag/chip input, where leaving the field *adds* an entry, consecutive inputs
 | Operations inside iframes | Yes |
 | **Operations inside frameset `<frame>`s** | Yes — located by name or position |
 | **Links that open a new tab (`target="_blank"`)** | Yes — recording and replay both follow the new tab |
-| **alert / confirm / prompt** | Yes — replaced during replay and answered automatically (see below) |
+| **alert / confirm / prompt** | Yes — the answer you gave is recorded, and replay returns it without showing a dialog (see below) |
 | Page transitions (including SPA history changes) | Yes |
 
 ### Notes
 
 - **Key presses**: ordinary typing is not recorded (the committed value is captured separately). Only special keys and modifier combinations are.
 - **Mouse paths**: only movements of 8px or more are recorded as a path, which keeps them distinct from plain clicks. Up to 300 points per gesture.
-- **alert / confirm / prompt**: an extension cannot dismiss a browser dialog, so during replay `window.alert` and friends are replaced and **no dialog is shown**. `confirm` returns OK and `prompt` returns its default. In exported scripts, use Playwright's or Puppeteer's own dialog handling.
+- **alert / confirm / prompt**: the OK and Cancel buttons belong to the browser, not the page, so an ordinary event listener never sees them. While recording, `window.confirm` and friends are replaced so that **the real dialog still appears** and only the answer you gave is kept, as a step reading `Dialog: confirm "Delete for real?" -> Cancel`. During replay **no dialog is shown**: the recorded answer is returned on the spot. A dialog that was never recorded still falls back to the old behaviour — `confirm` returns OK, `prompt` returns its default. Exported scripts register `page.once('dialog', ...)` just before the action that opens the dialog.
+- **Answers to prompt**: these accept `{{data.column}}` and the other templates, like any other input value. Edit `answer` on the JSON (editable) tab of the detail dialog (`null` means Cancel was pressed).
 - **Shadow DOM**: open shadow roots only (`mode: 'closed'` is unreachable from outside by design). Exports use Playwright's automatic piercing, or Puppeteer's `>>>` syntax.
 
 ### Not supported
@@ -366,7 +367,7 @@ If the site keeps its auth token in `sessionStorage`, however, a new window coun
 | Trigger | manual or scheduled |
 | Per-step result | succeeded / failed / skipped / optional-warning, with the error text |
 | Fallback selector used | The candidate that matched when the primary selector missed |
-| Dialogs | Any `alert` / `confirm` / `prompt` raised during the run |
+| Dialogs | Any `alert` / `confirm` / `prompt` raised during the run, the answer returned, and whether it came from the recording |
 
 The newest 100 runs are kept; older ones are dropped automatically. "Delete all" clears them by hand.
 

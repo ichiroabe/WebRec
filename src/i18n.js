@@ -239,6 +239,7 @@ const MESSAGES = {
     'runs.status.error': '中断',
     'runs.rowPrefix': '{row}行目: ',
     'runs.dialogs': 'ダイアログ: ',
+    'runs.dialogPlanned': '（記録どおり）',
 
     // --- スケジュール ---
     'schedule.title': 'スケジュール',
@@ -308,6 +309,12 @@ const MESSAGES = {
     'step.scrollElement': 'スクロール: {selector} ({x}, {y})',
     'step.pointerPath': 'マウス軌跡: {selector}（{n} 点）',
     'step.newTab': '新しいタブに移る -> {url}',
+    'step.dialogAlert': 'ダイアログ: alert「{message}」を閉じる',
+    'step.dialogConfirm': 'ダイアログ: confirm「{message}」で {answer}',
+    'step.dialogPrompt': 'ダイアログ: prompt「{message}」に "{answer}" と入力',
+    'step.dialogPromptCancel': 'ダイアログ: prompt「{message}」でキャンセル',
+    'dialog.ok': 'OK',
+    'dialog.cancel': 'キャンセル',
 
     // --- 検証メッセージ ---
     'v.stepAt': 'ステップ {n}',
@@ -326,6 +333,9 @@ const MESSAGES = {
     'v.badNumberType': '{at}: {key} は数値で指定してください',
     'v.badNumberNegative': '{at}: {key} に負の値は指定できません',
     'v.badUrl': '{at}: url は http/https で始まる必要があります',
+    'v.dialogBadKind': '{at}: ダイアログの種類「{kind}」は alert / confirm / prompt のいずれかである必要があります',
+    'v.dialogBadConfirm': '{at}: confirm への応答は true(OK) か false(キャンセル) である必要があります',
+    'v.dialogBadPrompt': '{at}: prompt への応答は入力した文字列か、キャンセルを表す null である必要があります',
     'v.emptyValues': '{at}: 複数選択の値が空です（何も選ばれません）',
     'v.disabledAndOptional': '{at}: 無効化されているため optional は効きません',
     'v.passwordPlaceholder': '{at}: <PASSWORD> のままです。実際の値に書き換えてください',
@@ -583,6 +593,7 @@ const MESSAGES = {
     'runs.status.error': 'aborted',
     'runs.rowPrefix': 'row {row}: ',
     'runs.dialogs': 'Dialogs: ',
+    'runs.dialogPlanned': ' (as recorded)',
 
     // --- Schedules ---
     'schedule.title': 'Schedules',
@@ -652,6 +663,12 @@ const MESSAGES = {
     'step.scrollElement': 'Scroll {selector} to ({x}, {y})',
     'step.pointerPath': 'Mouse path: {selector} ({n} points)',
     'step.newTab': 'Switch to the new tab -> {url}',
+    'step.dialogAlert': 'Dialog: dismiss alert "{message}"',
+    'step.dialogConfirm': 'Dialog: confirm "{message}" -> {answer}',
+    'step.dialogPrompt': 'Dialog: prompt "{message}" -> type "{answer}"',
+    'step.dialogPromptCancel': 'Dialog: prompt "{message}" -> cancel',
+    'dialog.ok': 'OK',
+    'dialog.cancel': 'Cancel',
 
     // --- Validation messages ---
     'v.stepAt': 'Step {n}',
@@ -670,6 +687,9 @@ const MESSAGES = {
     'v.badNumberType': '{at}: {key} must be a number',
     'v.badNumberNegative': '{at}: {key} cannot be negative',
     'v.badUrl': '{at}: url must start with http or https',
+    'v.dialogBadKind': '{at}: dialog kind "{kind}" must be alert, confirm, or prompt',
+    'v.dialogBadConfirm': '{at}: the answer to confirm must be true (OK) or false (Cancel)',
+    'v.dialogBadPrompt': '{at}: the answer to prompt must be the typed string, or null for Cancel',
     'v.emptyValues': '{at}: the multi-select values are empty (nothing will be selected)',
     'v.disabledAndOptional': '{at}: the step is disabled, so optional has no effect',
     'v.passwordPlaceholder': '{at}: still <PASSWORD>. Replace it with the real value',

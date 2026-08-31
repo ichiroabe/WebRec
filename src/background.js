@@ -80,6 +80,33 @@ async function ensureContentScript(tabId) {
   }
 }
 
+// ダイアログの差し替えはドキュメント単位で消えるので、
+// フレームが読み込み直されるたびに入れ直す（下の onCommitted から呼ぶ）。
+async function hookDialogsForRecording(tabId, frameIds) {
+  try {
+    await chrome.scripting.executeScript({
+      target: frameIds ? { tabId, frameIds } : { tabId, allFrames: true },
+      world: 'MAIN', // ページ自身の window を書き換える必要がある
+      func: installDialogRecorder,
+      injectImmediately: true, // 読み込み完了を待つとダイアログに先を越される
+    });
+  } catch (_) {
+    /* 遷移直後などで入れられないことがある。そのダイアログを取り逃すだけ */
+  }
+}
+
+async function unhookDialogsForRecording(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: 'MAIN',
+      func: uninstallDialogHooks,
+    });
+  } catch (_) {
+    /* タブが閉じられた後などは戻す先が無い */
+  }
+}
+
 async function startRecording({ tabId, startUrl, name }) {
   await restoreSession();
   if (session) {
@@ -104,6 +131,7 @@ async function startRecording({ tabId, startUrl, name }) {
   };
   await persistSession();
   await setBadge(tabId, true);
+  await hookDialogsForRecording(tabId); // alert / confirm / prompt の結果も拾えるようにする
   await notifyTab(tabId, { type: 'WEBREC_START' });
   return { ok: true, id: session.id };
 }
@@ -117,6 +145,7 @@ async function stopRecording() {
   session = null;
   await chrome.storage.session.remove(SESSION_KEY);
   await setBadge(finished.tabId, false);
+  await unhookDialogsForRecording(finished.tabId); // 記録が終わったら本物のダイアログに戻す
   await notifyTab(finished.tabId, { type: 'WEBREC_STOP' });
 
   // 記録し終えてから整理する。記録中に間引くと条件を変えられないため、
@@ -198,7 +227,16 @@ async function recordNavigate(tabId, url) {
 
 let historyDebounceTimer = null;
 
+// 記録中のダイアログ差し替えを入れ直す。ページ遷移だけでなく、
+// frameset のように一部のフレームだけが読み込み直される場合にも必要。
+async function rehookDialogs(details) {
+  await restoreSession();
+  if (!session || details.tabId !== session.tabId) return;
+  await hookDialogsForRecording(details.tabId, [details.frameId]);
+}
+
 function handleCommitted(details) {
+  rehookDialogs(details);
   if (details.frameId !== 0) return;
   if (historyDebounceTimer) {
     clearTimeout(historyDebounceTimer);
@@ -709,33 +747,102 @@ function performStepInPage(step) {
 }
 
 // alert / confirm / prompt はページの実行を止めてしまい、拡張機能からは閉じられない。
-// 再生中だけ MAIN ワールドで差し替えて、ダイアログを出さずに既定の応答を返す。
-function installDialogStubs() {
-  if (window.__webrecDialogStubbed) return;
-  window.__webrecDialogStubbed = true;
-  window.__webrecDialogs = [];
-  const log = (kind, message, answer) => window.__webrecDialogs.push({ kind, message, answer });
+// また OK / キャンセルのボタンはページの中に無いので、DOM のイベントとしては拾えない。
+// そこで MAIN ワールド（ページ自身の window）で関数ごと差し替え、記録と再生で使い分ける。
+//   記録: 本物のダイアログは出したまま、押された結果だけを控える
+//   再生: ダイアログを出さず、控えておいた結果をその場で返す
+//
+// 以下 3 つは chrome.scripting で注入するので、外側の変数は参照できない（引数で渡す）。
+
+// 元の関数はページごとに 1 度だけ退避する。二重に包むと本物に辿り着けなくなる。
+function installDialogRecorder() {
+  if (!window.__webrecDialogNative) {
+    window.__webrecDialogNative = { alert: window.alert, confirm: window.confirm, prompt: window.prompt };
+  }
+  if (window.__webrecDialogRecording) return;
+  window.__webrecDialogRecording = true;
+  const native = window.__webrecDialogNative;
+  // content script（別 world）からはページの window を直接読めないので postMessage で渡す
+  const post = (kind, message, answer) => {
+    try {
+      window.postMessage(
+        { __webrec: 'dialog', kind, message: String(message == null ? '' : message).slice(0, 500), answer },
+        '*'
+      );
+    } catch (_) {
+      /* 記録できなくても、利用者の操作は止めない */
+    }
+  };
   window.alert = function (message) {
-    log('alert', String(message == null ? '' : message), null);
+    native.alert.call(window, message);
+    post('alert', message, null);
   };
   window.confirm = function (message) {
-    log('confirm', String(message == null ? '' : message), true);
-    return true; // 「OK」を押した扱いにする
+    const answer = native.confirm.call(window, message);
+    post('confirm', message, answer);
+    return answer;
   };
   window.prompt = function (message, defaultValue) {
-    const answer = defaultValue == null ? '' : String(defaultValue);
-    log('prompt', String(message == null ? '' : message), answer);
+    const answer = native.prompt.call(window, message, defaultValue);
+    post('prompt', message, answer);
     return answer;
   };
 }
 
-async function stubDialogs(tabId) {
+// queue には記録しておいた応答が、出る順に入っている。
+// 記録に無いダイアログが出た場合は、従来どおりの既定の応答に落とす。
+function installDialogStubs(queue) {
+  if (!window.__webrecDialogNative) {
+    window.__webrecDialogNative = { alert: window.alert, confirm: window.confirm, prompt: window.prompt };
+  }
+  window.__webrecDialogs = window.__webrecDialogs || [];
+  window.__webrecDialogQueue = Array.isArray(queue) ? queue.slice() : [];
+  // 種類が食い違うときは消費しない（ずれたまま後続のダイアログへ持ち越さないため）
+  const take = (kind) => {
+    const q = window.__webrecDialogQueue;
+    return q.length && q[0].kind === kind ? q.shift() : null;
+  };
+  const log = (kind, message, answer, planned) =>
+    window.__webrecDialogs.push({ kind, message: String(message == null ? '' : message), answer, planned });
+  window.alert = function (message) {
+    log('alert', message, null, !!take('alert'));
+  };
+  window.confirm = function (message) {
+    const item = take('confirm');
+    const answer = item ? item.answer !== false : true; // 記録が無ければ「OK」を押した扱い
+    log('confirm', message, answer, !!item);
+    return answer;
+  };
+  window.prompt = function (message, defaultValue) {
+    const item = take('prompt');
+    // 記録が無ければ、ページが用意した初期値をそのまま返す
+    const answer = item ? item.answer : defaultValue == null ? '' : String(defaultValue);
+    log('prompt', message, answer, !!item);
+    return answer === null ? null : String(answer);
+  };
+}
+
+// 差し替えを解いて元に戻す。記録が終わった後も利用者はそのページを使い続けるため。
+function uninstallDialogHooks() {
+  const native = window.__webrecDialogNative;
+  if (!native) return;
+  window.alert = native.alert;
+  window.confirm = native.confirm;
+  window.prompt = native.prompt;
+  window.__webrecDialogRecording = false;
+}
+
+// いま仕込んである応答。遷移でフレームが読み込み直されたときに入れ直すため保持する。
+let armedDialogs = [];
+
+async function stubDialogs(tabId, queue = armedDialogs) {
   try {
     await withTimeout(
       chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
         world: 'MAIN', // ページ自身の window を書き換える必要がある
         func: installDialogStubs,
+        args: [queue],
         injectImmediately: true, // 読み込み完了を待つとダイアログに先を越される
       }),
       5000
@@ -743,6 +850,26 @@ async function stubDialogs(tabId) {
   } catch (err) {
     console.warn('WebRec: failed to stub dialogs', err);
   }
+}
+
+// ダイアログは操作の途中で同期的に出るため、操作を始める前に応答を渡しておく必要がある。
+async function armDialogs(tabId, queue) {
+  if (!queue.length && !armedDialogs.length) return; // 仕込むものも、消すものも無い
+  armedDialogs = queue;
+  await stubDialogs(tabId, queue);
+}
+
+// step[index] の直後に続く dialog ステップを、応答の待ち行列に組み立てる
+async function plannedDialogs(steps, index, ctx) {
+  const out = [];
+  for (let j = index + 1; j < steps.length; j++) {
+    const st = steps[j];
+    if (st.disabled) continue; // 無効化した応答は使わない（既定の応答に任せる）
+    if (st.type !== 'dialog') break;
+    const resolved = await resolveStepTotp(resolveStepTemplates(st, ctx), ctx);
+    out.push({ kind: resolved.kind, answer: resolved.answer === undefined ? null : resolved.answer });
+  }
+  return out;
 }
 
 // ダイアログ差し替えはドキュメント単位なので、遷移やフレームの読み込み直しで消える。
@@ -759,6 +886,7 @@ function startDialogGuard(getTabId) {
         target: { tabId: details.tabId, frameIds: [details.frameId] },
         world: 'MAIN',
         func: installDialogStubs,
+        args: [armedDialogs], // まだ使っていない応答は、読み込み直した後も効かせる
         injectImmediately: true,
       })
       .catch(() => {
@@ -1045,6 +1173,7 @@ async function replayRecording(id, onProgress, opts = {}) {
   } finally {
     replayBusy = false;
     stopDialogGuard();
+    armedDialogs = []; // 使い残しを次の再生へ持ち越さない
   }
 }
 
@@ -1147,8 +1276,18 @@ async function runReplay(id, onProgress, opts) {
           await sleep(step.waitBeforeMs);
         }
 
+        // この操作で出るダイアログの応答を先に仕込む。
+        // ダイアログは操作の途中で同期的に出るので、出てから渡しても間に合わない。
+        // dialog ステップ自身では仕込み直さない（その分は既に待ち行列に入っている）。
+        if (step.type !== 'dialog') {
+          await armDialogs(tab.id, await plannedDialogs(rec.steps, i, tplCtx));
+        }
+
         if (step.type === 'wait') {
           await sleep(Number.isFinite(step.ms) ? step.ms : 1000);
+        } else if (step.type === 'dialog') {
+          // 応答は直前の操作の前に仕込み済み。ここでは実行ログへの回収だけ行う。
+          await collectDialogs(tab.id, i);
         } else if (step.type === 'navigate') {
           // 直前のクリック等で自然に遷移が始まっている場合があるので、まず完了を待つ。
           await waitForTabReady(tab.id, cfg.pageLoadTimeoutMs);

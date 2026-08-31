@@ -34,6 +34,7 @@ function valueStrings(step) {
   if (typeof step.value === 'string') out.push(step.value);
   if (typeof step.url === 'string') out.push(step.url);
   if (Array.isArray(step.values)) for (const v of step.values) if (typeof v === 'string') out.push(v);
+  if (typeof step.answer === 'string') out.push(step.answer); // prompt に入力した文字
   return out;
 }
 
@@ -147,6 +148,17 @@ export function validateRecording(rec) {
     if (step.type === 'navigate' && typeof step.url === 'string' && step.url.indexOf('{{') === -1) {
       if (!/^https?:\/\//.test(step.url)) {
         issues.push(issue('error', 'bad-url', t('v.badUrl', { at }), i));
+      }
+    }
+
+    // ダイアログへの応答
+    if (step.type === 'dialog') {
+      if (!['alert', 'confirm', 'prompt'].includes(step.kind)) {
+        issues.push(issue('error', 'dialog-bad-kind', t('v.dialogBadKind', { at, kind: String(step.kind) }), i));
+      } else if (step.kind === 'confirm' && typeof step.answer !== 'boolean') {
+        issues.push(issue('error', 'dialog-bad-answer', t('v.dialogBadConfirm', { at }), i));
+      } else if (step.kind === 'prompt' && step.answer !== null && typeof step.answer !== 'string') {
+        issues.push(issue('error', 'dialog-bad-answer', t('v.dialogBadPrompt', { at }), i));
       }
     }
 

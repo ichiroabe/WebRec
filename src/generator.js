@@ -237,7 +237,10 @@ const KNOWN_STEP_TYPES = new Set([
   'assertText',
   'assertVisible',
   'assertMissing',
+  'dialog',
 ]);
+
+const DIALOG_KINDS = new Set(['alert', 'confirm', 'prompt']);
 
 // JSON を録画データとして受け入れる前に検証する。
 // 手編集した JSON やインポートしたファイルが壊れていた場合、ここで具体的な理由を返す。
@@ -273,6 +276,17 @@ export function parseRecordingJson(text) {
       if (!Number.isFinite(step.ms)) throw new Error(`${at}.ms は数値である必要があります`);
     } else if (step.type === 'newTab') {
       // 新しいタブを掴むだけなので対象要素は不要
+    } else if (step.type === 'dialog') {
+      // ブラウザが出すダイアログへの応答。ページ内の要素ではないので対象要素は不要
+      if (!DIALOG_KINDS.has(step.kind)) {
+        throw new Error(`${at}.kind は ${[...DIALOG_KINDS].join(' / ')} のいずれかである必要があります`);
+      }
+      if (step.kind === 'confirm' && typeof step.answer !== 'boolean') {
+        throw new Error(`${at}.answer は true(OK) か false(キャンセル) である必要があります`);
+      }
+      if (step.kind === 'prompt' && step.answer !== null && typeof step.answer !== 'string') {
+        throw new Error(`${at}.answer は入力した文字列か、キャンセルを表す null である必要があります`);
+      }
     } else if (step.type === 'scroll' && !step.selector) {
       // ウィンドウ全体のスクロール
       if (!Number.isFinite(step.x) || !Number.isFinite(step.y)) {
@@ -363,12 +377,37 @@ function pwScope(step) {
 }
 
 // シナリオ本体（開始URL + 全ステップ）を、指定のインデントで組み立てる
+// ダイアログはクリックなどの操作の途中で出るため、操作より先に応答を登録しておく必要がある。
+// 記録では「操作 → ダイアログ」の順に並ぶので、後ろに続く dialog ステップをここで先取りする。
+function dialogsAfter(steps, index) {
+  const out = [];
+  for (let j = index + 1; j < steps.length; j++) {
+    const st = steps[j];
+    if (st.disabled) continue; // 無効化されている応答は使わない（ブラウザの既定に任せる）
+    if (st.type !== 'dialog') break;
+    out.push(st);
+  }
+  return out;
+}
+
+// Playwright / Puppeteer とも page.once('dialog', ...) と dialog.accept/dismiss は同じ形
+function dialogHandlerLines(steps, index, ind) {
+  return dialogsAfter(steps, index).map((st) => {
+    if (st.kind === 'prompt') {
+      const action = st.answer === null ? 'dismiss()' : `accept(${val(st.answer)})`;
+      return `${ind}page.once('dialog', (d) => d.${action}); // ${stepSummary(st)}`;
+    }
+    const action = st.kind === 'confirm' && st.answer === false ? 'dismiss()' : 'accept()';
+    return `${ind}page.once('dialog', (d) => d.${action}); // ${stepSummary(st)}`;
+  });
+}
+
 function playwrightBody(rec, ind) {
   const lines = [];
   lines.push(`${ind}await page.goto(${val(rec.startUrl)});`);
 
-  for (let step of rec.steps) {
-    step = { ...step, selector: primarySelector(step) };
+  for (let index = 0; index < rec.steps.length; index++) {
+    let step = { ...rec.steps[index], selector: primarySelector(rec.steps[index]) };
     const scope = pwScope(step);
     if (step.disabled) {
       lines.push(`${ind}// [無効化] ${stepSummary(step)}`);
@@ -377,6 +416,7 @@ function playwrightBody(rec, ind) {
     if (Number.isFinite(step.waitBeforeMs) && step.waitBeforeMs > 0) {
       lines.push(`${ind}await page.waitForTimeout(${step.waitBeforeMs});`);
     }
+    if (step.type !== 'dialog') lines.push(...dialogHandlerLines(rec.steps, index, ind));
     switch (step.type) {
       case 'navigate':
         lines.push(`${ind}await page.goto(${val(step.url)});`);
@@ -474,6 +514,9 @@ function playwrightBody(rec, ind) {
       case 'keydown':
         lines.push(`${ind}await ${scope}.locator(${jsStr(pwSel(step.selector))}).press(${jsStr(step.key)});`);
         break;
+      case 'dialog':
+        // 応答は、これを出す操作の手前に page.once('dialog', ...) として書き出してある
+        break;
       default:
         lines.push(`${ind}// 未対応のステップ: ${step.type}`);
     }
@@ -517,8 +560,8 @@ function puppeteerBody(rec, ind) {
   lines.push(`${ind}await page.goto(${val(rec.startUrl)});`);
 
   let scopeVarCounter = 0;
-  for (let step of rec.steps) {
-    step = { ...step, selector: primarySelector(step) };
+  for (let index = 0; index < rec.steps.length; index++) {
+    const step = { ...rec.steps[index], selector: primarySelector(rec.steps[index]) };
     if (step.disabled) {
       lines.push(`${ind}// [無効化] ${stepSummary(step)}`);
       continue;
@@ -526,6 +569,7 @@ function puppeteerBody(rec, ind) {
     if (Number.isFinite(step.waitBeforeMs) && step.waitBeforeMs > 0) {
       lines.push(`${ind}await new Promise((r) => setTimeout(r, ${step.waitBeforeMs}));`);
     }
+    if (step.type !== 'dialog') lines.push(...dialogHandlerLines(rec.steps, index, ind));
     // フレーム内のステップは、その都度フレームハンドルを解決してから操作する
     let scope = 'page';
     if (step.frames && step.frames.length) {
@@ -641,6 +685,9 @@ function puppeteerBody(rec, ind) {
         lines.push(`${ind}await ${scope}.focus(${jsStr(step.selector)});`);
         lines.push(`${ind}await page.keyboard.press(${jsStr(step.key)});`);
         break;
+      case 'dialog':
+        // 応答は、これを出す操作の手前に page.once('dialog', ...) として書き出してある
+        break;
       default:
         lines.push(`${ind}// 未対応のステップ: ${step.type}`);
     }
@@ -750,6 +797,25 @@ export function stepSummary(rawStep) {
       return t('step.dragAndDrop', { selector: step.selector, toSelector: step.toSelector }) + inFrame;
     case 'keydown':
       return t('step.keydown', { key: step.key, selector: step.selector }) + inFrame;
+    case 'dialog': {
+      // 長い文言でも一覧が崩れないように、見出しとして読める長さで切る
+      const message = String(step.message == null ? '' : step.message);
+      const shown = message.length > 40 ? message.slice(0, 40) + '…' : message;
+      if (step.kind === 'alert') return t('step.dialogAlert', { message: shown }) + inFrame;
+      if (step.kind === 'prompt') {
+        return (
+          (step.answer === null
+            ? t('step.dialogPromptCancel', { message: shown })
+            : t('step.dialogPrompt', { message: shown, answer: step.answer })) + inFrame
+        );
+      }
+      return (
+        t('step.dialogConfirm', {
+          message: shown,
+          answer: step.answer === false ? t('dialog.cancel') : t('dialog.ok'),
+        }) + inFrame
+      );
+    }
     default:
       return `${step.type}`;
   }

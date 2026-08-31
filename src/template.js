@@ -212,11 +212,14 @@ export async function resolveTotp(text, ctx) {
 // ステップ内の {{totp:...}} を解決する（値・複数値・URL）
 export async function resolveStepTotp(step, ctx) {
   const hasTotp = (v) => typeof v === 'string' && v.indexOf('{{totp:') !== -1;
-  if (!hasTotp(step.value) && !hasTotp(step.url) && !(step.values || []).some(hasTotp)) return step;
+  if (!hasTotp(step.value) && !hasTotp(step.url) && !hasTotp(step.answer) && !(step.values || []).some(hasTotp)) {
+    return step;
+  }
 
   const out = { ...step };
   if (typeof out.value === 'string') out.value = await resolveTotp(out.value, ctx);
   if (typeof out.url === 'string') out.url = await resolveTotp(out.url, ctx);
+  if (typeof out.answer === 'string') out.answer = await resolveTotp(out.answer, ctx); // prompt への応答
   if (Array.isArray(out.values)) {
     const vals = [];
     for (const v of out.values) vals.push(await resolveTotp(v, ctx));
@@ -231,6 +234,7 @@ export function resolveStepTemplates(step, ctx) {
   if (typeof out.value === 'string') out.value = resolveTemplate(out.value, ctx);
   if (Array.isArray(out.values)) out.values = out.values.map((v) => resolveTemplate(v, ctx));
   if (typeof out.url === 'string') out.url = resolveTemplate(out.url, ctx);
+  if (typeof out.answer === 'string') out.answer = resolveTemplate(out.answer, ctx); // prompt への応答
   return out;
 }
 

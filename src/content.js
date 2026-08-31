@@ -659,6 +659,17 @@
     overlayEl = null;
   }
 
+  // ブラウザが出す alert / confirm / prompt は DOM のイベントを出さず、
+  // OK / キャンセルのボタンもページの中に無いので、ここでは直接掴めない。
+  // background が MAIN ワールドへ差し込んだ差し替えが、押された結果を
+  // postMessage で流してくるので、それをステップとして記録する。
+  function onDialogMessage(e) {
+    if (e.source !== window) return; // 他のフレームや外部から届いたものは信用しない
+    const d = e.data;
+    if (!d || d.__webrec !== 'dialog') return;
+    send({ type: 'dialog', kind: d.kind, message: d.message, answer: d.answer });
+  }
+
   async function startListening() {
     if (recording) return;
     recording = true;
@@ -676,6 +687,7 @@
     document.addEventListener('mousedown', onMouseDown, true);
     document.addEventListener('mousemove', onMouseMove, true);
     document.addEventListener('mouseup', onMouseUp, true);
+    window.addEventListener('message', onDialogMessage);
     if (!IS_TOP) return; // オーバーレイは最上位フレームだけに表示する
     if (document.body) ensureOverlay();
     else document.addEventListener('DOMContentLoaded', ensureOverlay, { once: true });
@@ -697,6 +709,7 @@
     document.removeEventListener('mouseup', onMouseUp, true);
     document.removeEventListener('dragstart', onDragStart, true);
     document.removeEventListener('drop', onDrop, true);
+    window.removeEventListener('message', onDialogMessage);
     removeOverlay();
   }
 

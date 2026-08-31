@@ -1103,6 +1103,17 @@ function fmtDuration(run) {
   return t('runs.duration', { sec });
 }
 
+// 実行ログの1件。何と答えたか、その応答が記録どおりかまで出す
+// （記録に無いダイアログは既定の応答で通しているので、そこを見分けられるようにする）
+function describeRunDialog(d) {
+  const message = String(d.message || '').slice(0, 80);
+  let answer;
+  if (d.kind === 'alert') answer = '';
+  else if (d.kind === 'confirm') answer = ' -> ' + t(d.answer === false ? 'dialog.cancel' : 'dialog.ok');
+  else answer = d.answer === null ? ' -> ' + t('dialog.cancel') : ` -> "${d.answer}"`;
+  return `${d.kind}: ${message}${answer}${d.planned ? t('runs.dialogPlanned') : ''}`;
+}
+
 function buildRunRow(run) {
   const wrap = document.createElement('div');
   wrap.className = 'run-row';
@@ -1167,9 +1178,7 @@ function buildRunRow(run) {
   if ((run.dialogs || []).length) {
     const dlg = document.createElement('div');
     dlg.className = 'run-dialogs';
-    dlg.textContent =
-      t('runs.dialogs') +
-      run.dialogs.map((d) => `${d.kind}: ${String(d.message || '').slice(0, 80)}`).join(' / ');
+    dlg.textContent = t('runs.dialogs') + run.dialogs.map(describeRunDialog).join(' / ');
     detail.appendChild(dlg);
   }
 
