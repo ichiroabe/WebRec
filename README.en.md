@@ -103,6 +103,7 @@ In a tag/chip input, where leaving the field *adds* an entry, consecutive inputs
 - Hover-only menus (clicks are recorded once the item is clickable, but the hover itself is not)
 - The copy/paste gesture itself (the resulting value is recorded)
 - The browser's back/forward buttons
+- **Auth dialogs other than basic auth** — digest auth, NTLM / Kerberos (integrated Windows auth), client certificate selection, and proxy authentication. The dialog looks the same, but adding an `Authorization: Basic ...` header does not satisfy them
 
 ## JSON is the script
 
@@ -397,7 +398,8 @@ The same credentials come out as each framework's dedicated API.
 - The username and password are **as sensitive as any password**, like a TOTP secret. They are stored in plain text in the recording (IndexedDB) and are included **both in JSON exports and in generated scripts**. Use **test accounts only** and be careful where they go.
 - Validation always reports that a recording carries credentials, and also flags an empty password, a leftover `<PASSWORD>`, or a malformed target URL.
 - **Nothing is detected automatically while recording.** Watching for 401 challenges would require the `webRequest` permission, widening what the extension can do. After recording a site that shows the dialog, add the entry here by hand.
-- Credentials the browser remembers (after you type them once) are not carried into a replay. Only what you register here is used.
+- **Watch out for "it works by hand but stalls on replay".** Once you type the credentials, the browser remembers them for the profile — that is the "HTTP auth" row in [Login sessions during replay](#login-sessions-during-replay). So an unregistered site may replay fine today, yet stop working after a browser restart, and never work in an exported script (a different profile). **Register them here to replay reliably.**
+- After updating to a version that includes this feature, **reload the extension** at `chrome://extensions`. Until the new permission (`declarativeNetRequestWithHostAccess`) takes effect, registered credentials cannot be applied.
 
 ## Login sessions during replay
 
@@ -550,5 +552,7 @@ They disappear with the profile, so **export the JSON regularly with "Export all
 - Only one replay runs at a time (two would fight over the same tab).
 - Scheduled runs only fire while the browser is open; this is not a fit for always-on automation.
 - Password fields (`type="password"`) are masked as `<PASSWORD>`; the real value is never stored.
+- [Basic auth](#basic-auth-the-browsers-login-dialog) credentials, by contrast, **are stored in plain text** — they have to be sent — and are included in JSON exports and generated scripts. Use test accounts only.
+- Basic auth rules apply browser-wide for the duration of a replay when the recording contains a `newTab` step; otherwise they are limited to the tab being replayed.
 - Selectors are generated in the order `data-testid` / `id` / `name` / `aria-label` / CSS path, so pages with highly dynamic DOM structures may replay less reliably.
 - The built-in replay is deliberately simple. For complex SPAs, exporting the Playwright / Puppeteer script and running it under Node.js is recommended.
