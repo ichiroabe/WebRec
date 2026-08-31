@@ -24,6 +24,7 @@ Japanese and English are both supported. Switch with the selector in the manager
 - Every replay is kept in the **run log** — which step failed, and any dialog that appeared.
 - **⏰ Schedules** run a recording daily at a time, or every N minutes (while the browser is open).
 - **Assertion steps** (`assertText` / `assertVisible` / `assertMissing`) stop the run when the page is not what you expected.
+- Sites behind **basic auth** (staging environments, …) replay without the login dialog once you register the credentials.
 
 ## Installing (unpacked, for development)
 
@@ -85,6 +86,7 @@ In a tag/chip input, where leaving the field *adds* an entry, consecutive inputs
 | **Operations inside frameset `<frame>`s** | Yes — located by name or position |
 | **Links that open a new tab (`target="_blank"`)** | Yes — recording and replay both follow the new tab |
 | **alert / confirm / prompt** | Yes — the answer you gave is recorded, and replay returns it without showing a dialog (see below) |
+| **The basic auth dialog** | Yes — register the credentials and they are sent as a header, so the dialog never appears ([Basic auth](#basic-auth-the-browsers-login-dialog)) |
 | Page transitions (including SPA history changes) | Yes |
 
 ### Notes
@@ -134,6 +136,7 @@ The **Validate** button (and opening the JSON tab, saving, or importing) checks 
 | --- | --- |
 | Unknown variable | `{{today}}` — it will be typed literally |
 | Password never filled in | the value is still `<PASSWORD>` |
+| Basic auth username or password is empty | added on the "Basic auth" tab but left blank |
 | Data rows with different columns | row 1 has `b`, row 2 does not |
 | No steps / every step disabled | — |
 | Empty multi-select values | `"values": []` |
@@ -142,6 +145,7 @@ The **Validate** button (and opening the JSON tab, saving, or importing) checks 
 
 - Data columns no step refers to
 - `optional` on a disabled step (it has no effect)
+- Basic auth credentials are stored in the recording (they are included in exports)
 
 Errors name the real alternatives (`available: fullName, age`), so a typo can be fixed on the spot.
 
@@ -333,6 +337,68 @@ The secret is the Base32 string shown when you enrol an authenticator app (print
 - If an authenticator extension (1Password, Authenticator, …) autofills the code, the number is still not stored — it is recorded as `<OTP>`. Replace it with `{{totp:...}}` the same way.
 - SMS, email and push-based verification cannot be reproduced by nature. Disable 2FA in your test environment, or use a fixed test code.
 
+## Basic auth (the browser's login dialog)
+
+The **username/password dialog** that pops up the moment you open a staging site is supported.
+
+Like `alert` / `confirm`, that dialog belongs to **the browser**, not the page — and unlike them there is not even a `window.*` function to replace. It cannot be driven from page JavaScript, so WebRec does not try to answer it: it makes sure it **never appears**. While replaying, a rule adds an `Authorization: Basic ...` header, so the server responds as already authenticated.
+
+### Setting it up
+
+Open a recording, go to the "**Basic auth**" tab, and add the target URL, username and password. The first row you add is pre-filled with the origin of the start URL.
+
+The target URL is matched as a **prefix**.
+
+| Written as | Covers |
+| --- | --- |
+| `https://staging.example.com/` | the whole site (typical for a staging environment) |
+| `https://staging.example.com/admin/` | only that subtree (page and sub-resources alike) |
+| `http://192.168.0.10:8080/` | a different port is a different target |
+
+- A missing trailing `/` is filled in (`https://example.com` becomes `https://example.com/`). Writing `/*` is fine too — the `*` is dropped, since matching is by prefix.
+- Add a row per protected host, up to 20.
+- Pasting `https://user:pass@example.com/` into the URL field moves the credentials into the username/password fields. That is deliberate: **credentials do not belong in a URL** (they leak into referrers and history).
+- Username and password accept variables such as `{{data.column}}`, so a data-driven run can **use a different account per row**.
+
+The JSON tab does the same thing:
+
+```json
+{
+  "startUrl": "https://staging.example.com/",
+  "basicAuth": [
+    { "url": "https://staging.example.com/", "username": "qa", "password": "s3cret" }
+  ],
+  "steps": []
+}
+```
+
+### What happens during replay
+
+- The rules are registered as **`declarativeNetRequest` session rules**. They never touch disk, and they are removed when the replay ends — including when it fails.
+- They apply **only to the tab being replayed**, so your normal browsing is unaffected. The one exception is a recording containing a `newTab` step: the first request of a freshly opened tab would arrive before the rule could be narrowed to it, so for those the rules apply browser-wide for the duration of the replay.
+- The rules are installed **before** the start URL is loaded (a new window opens on `about:blank` first, then navigates).
+- If a previous replay died and left rules behind, they are cleaned up when the extension starts and again when a replay begins.
+
+### In exported scripts
+
+The same credentials come out as each framework's dedicated API.
+
+| Output | Generated code |
+| --- | --- |
+| Playwright | `test.use({ httpCredentials: { username, password, origin } })` |
+| Puppeteer | `await page.authenticate({ username, password })` |
+
+- Both answer a 401 challenge rather than sending the header up front, so path scoping is left to the server (the path part of the target URL has no effect in exports).
+- Both APIs hold **one set of credentials**. With more than one entry, the first is exported and the rest are listed in a comment at the top.
+- In Playwright output for a data-driven recording, variables in the credentials are not resolved — replace them with real values. Puppeteer resolves them in both cases.
+
+### Things to know
+
+- The username and password are **as sensitive as any password**, like a TOTP secret. They are stored in plain text in the recording (IndexedDB) and are included **both in JSON exports and in generated scripts**. Use **test accounts only** and be careful where they go.
+- Validation always reports that a recording carries credentials, and also flags an empty password, a leftover `<PASSWORD>`, or a malformed target URL.
+- **Nothing is detected automatically while recording.** Watching for 401 challenges would require the `webRequest` permission, widening what the extension can do. After recording a site that shows the dialog, add the entry here by hand.
+- Credentials the browser remembers (after you type them once) are not carried into a replay. Only what you register here is used.
+
 ## Login sessions during replay
 
 Where replay starts is chosen in the dialog that appears after you press "▶ Replay".
@@ -434,7 +500,7 @@ npm install
 npm test
 ```
 
-24 suites run, each in its own process. Pass part of a name to narrow it down.
+26 suites run, each in its own process. Pass part of a name to narrow it down.
 
 ```bash
 npm test -- totp
@@ -450,6 +516,7 @@ The extension itself cannot run under Node, so the tests cover the **parts that 
 | Template variables | Date formats and offsets, zero padding, TOTP (checked against the official RFC 6238 vectors) |
 | UI wiring | Every id manager.js references exists in manager.html; only one panel is visible at a time |
 | Languages | The Japanese and English catalogs match; every key used in code is defined |
+| Basic auth | Target URL normalization, the header value (RFC 7617), the rules that get installed, and that they are removed afterwards |
 
 jsdom stands in for the DOM, and fake-indexeddb for IndexedDB.
 
@@ -472,7 +539,7 @@ A design note on connecting web and local work is in [docs/automation-plan.md](d
 
 ## Where the data lives
 
-Recordings, uploaded file contents and the run log all live in IndexedDB (`webrec-db`) in your browser profile; schedules and the language setting live in `chrome.storage.local`. Nothing is ever sent to an external server.
+Recordings (including basic auth credentials), uploaded file contents and the run log all live in IndexedDB (`webrec-db`) in your browser profile; schedules and the language setting live in `chrome.storage.local`. Nothing is ever sent to an external server.
 
 They disappear with the profile, so **export the JSON regularly with "Export all"** — with that file you can restore everything through "Import" on a fresh machine.
 

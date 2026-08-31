@@ -9,10 +9,17 @@ import { getSettings, effectiveSettings, nextSeq } from './settings.js';
 import { resolveStepTemplates, resolveStepTotp } from './template.js';
 import { stepSummary } from './generator.js';
 import { normalizeSteps } from './normalize.js';
+import { applyBasicAuth, clearBasicAuth, resolveBasicAuth } from './basicauth.js';
 import { initI18n, t, getLang } from './i18n.js';
 
 // service worker が起きたら文言を確定させておく
 const i18nReady = initI18n();
+
+// 前回の再生が service worker ごと落ちた場合、Basic 認証のセッションルールが
+// 残っていることがある。起動時に必ず片付けてから始める。
+clearBasicAuth().catch(() => {
+  /* declarativeNetRequest が使えない環境では何もしない */
+});
 
 const SESSION_KEY = 'webrec_active_session';
 
@@ -1174,6 +1181,8 @@ async function replayRecording(id, onProgress, opts = {}) {
     replayBusy = false;
     stopDialogGuard();
     armedDialogs = []; // 使い残しを次の再生へ持ち越さない
+    // 資格情報つきのルールを残したまま終わらない（再生中だけの設定にする）
+    await clearBasicAuth().catch(() => {});
   }
 }
 
@@ -1197,6 +1206,25 @@ async function runReplay(id, onProgress, opts) {
   const keepUrl = !!opts.keepCurrentUrl;
   const startAt = Number.isFinite(opts.startAtIndex) ? Math.max(0, opts.startAtIndex) : 0;
 
+  // --- Basic 認証 ---
+  // ブラウザが出す認証ダイアログは JS から触れないので、出させないほうで対応する。
+  // 再生に使うタブに限って Authorization ヘッダを足すルールを張り、終わったら消す。
+  const authEntries = Array.isArray(rec.basicAuth) ? rec.basicAuth.filter((e) => e && e.url) : [];
+  const authTabIds = new Set();
+  // 別タブへ移る録画（newTab ステップあり）では、タブが開いた瞬間の最初のリクエストに
+  // ルールの張り直しが間に合わない。そのため最初からタブ限定をやめ、
+  // 再生中だけブラウザ全体に効かせる（終了時に必ず消す）。
+  const authAnyTab = (rec.steps || []).some((st) => st.type === 'newTab');
+  const applyAuth = async (ctx) => {
+    if (!authEntries.length) return;
+    try {
+      await applyBasicAuth(resolveBasicAuth(authEntries, ctx), authAnyTab ? [] : [...authTabIds]);
+    } catch (err) {
+      throw new Error(t('bg.basicAuthFailed', { error: String(err && err.message ? err.message : err) }));
+    }
+  };
+  await clearBasicAuth().catch(() => {}); // 前回の残りを引きずらない
+
   beginRun(rec, opts, rows.length);
   // 進捗は画面と実行ログの両方へ流す
   const report = (progress) => {
@@ -1214,14 +1242,25 @@ async function runReplay(id, onProgress, opts) {
     } catch (_) {
       /* ウィンドウ操作に失敗しても再生自体は続行できる */
     }
+    authTabIds.add(tab.id);
+    await applyAuth(firstCtx); // 開始URLへ動かす前に張っておく
     if (!keepUrl) {
       await chrome.tabs.update(tab.id, { url: firstUrl });
       await sleep(200);
     }
   } else {
-    // 管理画面(進捗リスト)を見ながらでも再生の様子が隠れないよう、別ウィンドウで開く
-    const win = await chrome.windows.create({ url: firstUrl, focused: true });
+    // 管理画面(進捗リスト)を見ながらでも再生の様子が隠れないよう、別ウィンドウで開く。
+    // Basic 認証があるときは、ルールを張る前に開始URLを読ませないよう about:blank で開く。
+    const win = await chrome.windows.create({
+      url: authEntries.length ? 'about:blank' : firstUrl,
+      focused: true,
+    });
     tab = win.tabs[0];
+    if (authEntries.length) {
+      authTabIds.add(tab.id);
+      await applyAuth(firstCtx);
+      await chrome.tabs.update(tab.id, { url: firstUrl });
+    }
   }
   // 開始URLの読み込みには時間がかかることがある。ここで無言のまま待つと
   // 「再生中の表示だけで何も起きない」ように見えるので、状態を出しておく。
@@ -1244,6 +1283,8 @@ async function runReplay(id, onProgress, opts) {
 
     // 2行目以降は開始URLに戻してからシナリオをやり直す
     // （現在のページから始める指定のときは、状態を壊さないよう触らない）
+    if (r > 0) await applyAuth(tplCtx); // 行ごとに資格情報を変えられるようにする
+
     if (r > 0 && !keepUrl) {
       const startUrl = resolveStepTemplates({ url: rec.startUrl }, tplCtx).url;
       await chrome.tabs.update(tab.id, { url: startUrl });

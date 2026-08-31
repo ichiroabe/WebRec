@@ -2,6 +2,7 @@
 
 import { resolveTemplate } from './template.js';
 import { t } from './i18n.js';
+import { normalizeBasicAuth, authOrigin, basicAuthUsesTemplates } from './basicauth.js';
 
 function jsStr(v) {
   return JSON.stringify(v == null ? '' : v);
@@ -16,9 +17,14 @@ function hasTemplate(v) {
 
 function recordingUsesTemplates(rec) {
   if (hasTemplate(rec.startUrl)) return true;
+  if (basicAuthUsesTemplates(rec.basicAuth)) return true;
   return rec.steps.some(
     (s) => hasTemplate(s.value) || hasTemplate(s.url) || (Array.isArray(s.values) && s.values.some(hasTemplate))
   );
+}
+
+function basicAuthEntries(rec) {
+  return Array.isArray(rec.basicAuth) ? rec.basicAuth.filter((e) => e && e.url) : [];
 }
 
 // テンプレートを含む場合は V("...") 形式、含まない場合はただの文字列リテラルにする
@@ -110,6 +116,29 @@ function templateHelperSource(rec) {
   return parts.join('\n');
 }
 
+// Basic 認証の資格情報。V が使える文脈では実行時解決、そうでなければ文字列のまま。
+function cred(value, canResolve) {
+  return canResolve && hasTemplate(value) ? `V(${jsStr(value)})` : jsStr(value);
+}
+
+// 書き出したスクリプトには資格情報がそのまま載る。TOTP シークレットと同じ扱いの注意書きを出す。
+function basicAuthNoticeSource(rec) {
+  const entries = basicAuthEntries(rec);
+  if (!entries.length) return null;
+  const lines = [
+    '// --- Basic 認証 ---',
+    '// 下記にユーザー名とパスワードがそのまま含まれます。',
+    '// テスト用アカウントに限って使い、このファイルの共有先にご注意ください。',
+  ];
+  if (entries.length > 1) {
+    lines.push(
+      '// このスクリプトに適用できる資格情報は 1 組までです。以下は書き出していません:',
+      ...entries.slice(1).map((e) => `//   ${e.url}（${e.username || '(ユーザー名なし)'}）`)
+    );
+  }
+  return lines.join('\n') + '\n';
+}
+
 // アップロードを含む場合、必要なファイルを先頭で案内する
 function uploadNoticeSource(rec) {
   const names = [];
@@ -145,6 +174,7 @@ export function generateJson(rec) {
     steps: rec.steps,
   };
   if (rec.settings && Object.keys(rec.settings).length) out.settings = rec.settings;
+  if (Array.isArray(rec.basicAuth) && rec.basicAuth.length) out.basicAuth = rec.basicAuth;
   if (Array.isArray(rec.dataset) && rec.dataset.length) out.dataset = rec.dataset;
   return JSON.stringify(out, null, 2);
 }
@@ -346,6 +376,7 @@ export function parseRecordingJson(text) {
     startUrl: data.startUrl,
     steps: data.steps,
     settings: data.settings && typeof data.settings === 'object' ? data.settings : undefined,
+    basicAuth: normalizeBasicAuth(data.basicAuth),
     dataset: validateDataset(data.dataset),
     createdAt: Number.isFinite(data.createdAt) ? data.createdAt : Date.now(),
   };
@@ -531,7 +562,28 @@ export function generatePlaywright(rec) {
   lines.push('');
   const uploadNotice = uploadNoticeSource(rec);
   if (uploadNotice) lines.push(uploadNotice);
+  const authNotice = basicAuthNoticeSource(rec);
+  if (authNotice) lines.push(authNotice);
   if (recordingUsesTemplates(rec) || hasDataset(rec)) lines.push(templateHelperSource(rec));
+
+  // Basic 認証はコンテキスト単位の設定なので、test より前に置く。
+  // 401 が返ったときだけ送られるため、対象URLのパス部分はサーバー側の判断に任せる。
+  const auth = basicAuthEntries(rec)[0];
+  if (auth) {
+    // データセットありのときは V(...) がファイル直下に無いので、値をそのまま埋める
+    const canResolve = !hasDataset(rec);
+    if (!canResolve && basicAuthUsesTemplates([auth])) {
+      lines.push('// 注意: 資格情報のテンプレート変数はここでは解決されません。実際の値に書き換えてください。');
+    }
+    const origin = authOrigin(auth.url);
+    lines.push(
+      `test.use({ httpCredentials: { username: ${cred(auth.username, canResolve)}, password: ${cred(
+        auth.password,
+        canResolve
+      )}${origin ? `, origin: ${jsStr(origin)}` : ''} } });`,
+      ''
+    );
+  }
 
   if (hasDataset(rec)) {
     // データ1行につき1つのテストを作る（Playwright のデータ駆動テストの定石）
@@ -557,6 +609,16 @@ export function generatePlaywright(rec) {
 
 function puppeteerBody(rec, ind) {
   const lines = [];
+  // page.authenticate は 401 に応答する設定なので、最初の goto より前に置く
+  const auth = basicAuthEntries(rec)[0];
+  if (auth) {
+    lines.push(
+      `${ind}await page.authenticate({ username: ${cred(auth.username, true)}, password: ${cred(
+        auth.password,
+        true
+      )} }); // ${auth.url}`
+    );
+  }
   lines.push(`${ind}await page.goto(${val(rec.startUrl)});`);
 
   let scopeVarCounter = 0;
@@ -701,6 +763,8 @@ export function generatePuppeteer(rec) {
   lines.push('');
   const uploadNotice = uploadNoticeSource(rec);
   if (uploadNotice) lines.push(uploadNotice);
+  const authNotice = basicAuthNoticeSource(rec);
+  if (authNotice) lines.push(authNotice);
   if (recordingUsesTemplates(rec) || hasDataset(rec)) lines.push(templateHelperSource(rec));
   if (hasDataset(rec)) lines.push(datasetSource(rec));
 

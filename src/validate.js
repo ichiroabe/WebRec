@@ -6,6 +6,25 @@
 //     JSON としては正しいが再生すると意図しない結果になるものを拾う。
 
 import { t } from './i18n.js';
+import { normalizeAuthUrl } from './basicauth.js';
+
+// normalizeAuthUrl が返す理由コードと、表示する文言の対応
+const AUTH_URL_REASON = {
+  empty: 'v.basicAuthUrlEmpty',
+  unparsable: 'v.basicAuthUrlUnparsable',
+  scheme: 'v.basicAuthUrlScheme',
+  credentials: 'v.basicAuthUrlCredentials',
+  specials: 'v.basicAuthUrlSpecials',
+};
+
+// normalizeAuthUrl が投げた例外を、表示言語に合わせた1行にする。
+// 管理画面の「Basic認証」タブでも同じ文言を出すため、ここから公開している。
+export function authUrlIssueMessage(err, index, url) {
+  return t(AUTH_URL_REASON[err && err.code] || 'v.basicAuthUrlUnparsable', {
+    at: t('v.basicAuthAt', { n: index + 1 }),
+    url: String(url == null ? '' : url),
+  });
+}
 
 const KNOWN_VARS = ['data', 'row', 'date', 'time', 'datetime', 'random', 'seq', 'uuid', 'totp'];
 
@@ -87,6 +106,34 @@ export function validateRecording(rec) {
         );
       }
     });
+  }
+
+  // --- Basic 認証 ---
+  // 資格情報は録画に平文で入り、JSON エクスポートにも含まれる。
+  // TOTP シークレットと同じ「パスワード同等」の扱いをしていることを気づかせる。
+  const basicAuth = Array.isArray(rec.basicAuth) ? rec.basicAuth : [];
+  basicAuth.forEach((entry, i) => {
+    const at = t('v.basicAuthAt', { n: i + 1 });
+    if (!entry || typeof entry !== 'object') {
+      issues.push(issue('error', 'basic-auth-bad-entry', t('v.basicAuthBadEntry', { at })));
+      return;
+    }
+    try {
+      normalizeAuthUrl(entry.url);
+    } catch (err) {
+      issues.push(issue('error', 'basic-auth-bad-url', authUrlIssueMessage(err, i, entry.url)));
+    }
+    if (!String(entry.username || '').trim()) {
+      issues.push(issue('warning', 'basic-auth-no-user', t('v.basicAuthNoUser', { at })));
+    }
+    if (!String(entry.password || '')) {
+      issues.push(issue('warning', 'basic-auth-no-password', t('v.basicAuthNoPassword', { at })));
+    } else if (String(entry.password).includes('<PASSWORD>')) {
+      issues.push(issue('warning', 'basic-auth-placeholder', t('v.basicAuthPlaceholder', { at })));
+    }
+  });
+  if (basicAuth.length) {
+    issues.push(issue('info', 'basic-auth-stored', t('v.basicAuthStored', { n: basicAuth.length })));
   }
 
   // --- ステップごと ---

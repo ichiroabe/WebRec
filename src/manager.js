@@ -19,7 +19,8 @@ import {
 } from './generator.js';
 import { getSettings, saveSettings, resetSettings, SETTING_FIELDS, peekSeq, setNextSeq } from './settings.js';
 import { previewTemplate, TEMPLATE_HELP, helpSyntax } from './template.js';
-import { validateRecording, summarize } from './validate.js';
+import { validateRecording, summarize, authUrlIssueMessage } from './validate.js';
+import { normalizeBasicAuth, normalizeAuthUrl, splitUrlCredentials, MAX_ENTRIES } from './basicauth.js';
 import { normalizeSteps } from './normalize.js';
 import { initI18n, applyI18n, t, getLang, setLang, LANGS } from './i18n.js';
 
@@ -560,6 +561,152 @@ function collectRecSettings() {
   return Object.keys(out).length ? out : undefined;
 }
 
+// --- Basic 認証 ---
+// 対象URL・ユーザー名・パスワードの組を、この録画に紐づけて持つ。
+// 再生時は Authorization ヘッダとして送られ、認証ダイアログが出なくなる。
+const basicAuthPanel = document.getElementById('basicAuthPanel');
+const basicAuthRows = document.getElementById('basicAuthRows');
+const basicAuthEmpty = document.getElementById('basicAuthEmpty');
+const basicAuthError = document.getElementById('basicAuthError');
+const basicAuthCount = document.getElementById('basicAuthCount');
+const basicAuthTab = document.getElementById('basicAuthTab');
+const basicAuthAddBtn = document.getElementById('basicAuthAddBtn');
+const basicAuthShowPass = document.getElementById('basicAuthShowPass');
+const saveBasicAuthBtn = document.getElementById('saveBasicAuthBtn');
+const clearBasicAuthBtn = document.getElementById('clearBasicAuthBtn');
+
+// 編集中の内容。保存を押すまで録画には反映しない。
+let basicAuthDraft = [];
+
+function basicAuthField(labelKey, value, kind) {
+  const wrap = document.createElement('label');
+  wrap.className = 'auth-field';
+  const label = document.createElement('span');
+  label.textContent = t(labelKey);
+  const input = document.createElement('input');
+  input.type = kind === 'password' && !basicAuthShowPass.checked ? 'password' : 'text';
+  input.dataset.kind = kind;
+  input.value = value || '';
+  input.spellcheck = false;
+  if (kind === 'url') input.placeholder = 'https://staging.example.com/';
+  if (kind === 'password') input.autocomplete = 'off';
+  wrap.append(label, input);
+  return wrap;
+}
+
+function renderBasicAuth() {
+  basicAuthRows.innerHTML = '';
+  basicAuthEmpty.classList.toggle('hidden', basicAuthDraft.length > 0);
+  basicAuthCount.textContent = basicAuthDraft.length ? t('basicAuth.count', { n: basicAuthDraft.length }) : '';
+
+  basicAuthDraft.forEach((entry, i) => {
+    const row = document.createElement('div');
+    row.className = 'auth-row';
+    row.dataset.index = String(i);
+
+    const url = basicAuthField('basicAuth.urlLabel', entry.url, 'url');
+    const user = basicAuthField('basicAuth.userLabel', entry.username, 'username');
+    const pass = basicAuthField('basicAuth.passLabel', entry.password, 'password');
+
+    // URL に user:pass@ が入ったまま貼られたら、その場で欄へ振り分ける
+    url.querySelector('input').addEventListener('change', (e) => {
+      const split = splitUrlCredentials(e.target.value);
+      if (!split) return;
+      e.target.value = split.url;
+      user.querySelector('input').value = split.username;
+      pass.querySelector('input').value = split.password;
+      collectBasicAuth();
+      flashCopyMsg(t('basicAuth.splitNotice'));
+    });
+
+    const remove = document.createElement('button');
+    remove.className = 'icon-btn';
+    remove.textContent = '✕';
+    remove.title = t('basicAuth.removeTitle');
+    remove.addEventListener('click', () => {
+      collectBasicAuth();
+      basicAuthDraft.splice(i, 1);
+      renderBasicAuth();
+    });
+
+    row.append(url, user, pass, remove);
+    basicAuthRows.appendChild(row);
+  });
+}
+
+// 画面の入力欄から編集中の内容を拾い直す（保存・追加・削除の前に呼ぶ）
+function collectBasicAuth() {
+  basicAuthDraft = [...basicAuthRows.querySelectorAll('.auth-row')].map((row) => ({
+    url: row.querySelector('input[data-kind="url"]').value.trim(),
+    username: row.querySelector('input[data-kind="username"]').value,
+    password: row.querySelector('input[data-kind="password"]').value,
+  }));
+  return basicAuthDraft;
+}
+
+basicAuthAddBtn.addEventListener('click', () => {
+  collectBasicAuth();
+  if (basicAuthDraft.length >= MAX_ENTRIES) return;
+  const rec = getCurrentRecording();
+  // 1件目は開始URLのオリジンを既定にしておく（多くはサイト全体にかかっているため）
+  let url = '';
+  if (!basicAuthDraft.length && rec) {
+    try {
+      url = new URL(rec.startUrl).origin + '/';
+    } catch (_) {
+      /* 開始URLが壊れていれば空欄のまま */
+    }
+  }
+  basicAuthDraft.push({ url, username: '', password: '' });
+  renderBasicAuth();
+});
+
+basicAuthShowPass.addEventListener('change', () => {
+  collectBasicAuth();
+  renderBasicAuth();
+});
+
+saveBasicAuthBtn.addEventListener('click', async () => {
+  const rec = getCurrentRecording();
+  if (!rec) return;
+  // 空行（何も入力していない行）は保存せずに捨てる
+  const entries = collectBasicAuth().filter((e) => e.url || e.username || e.password);
+
+  // 何件目がどう駄目なのかを、検証タブと同じ文言で出す
+  const problems = [];
+  entries.forEach((e, i) => {
+    try {
+      normalizeAuthUrl(e.url);
+    } catch (err) {
+      problems.push(authUrlIssueMessage(err, i, e.url));
+    }
+  });
+  let normalized;
+  try {
+    if (problems.length) throw new Error(problems.join(' / '));
+    normalized = normalizeBasicAuth(entries);
+  } catch (err) {
+    basicAuthError.textContent = String(err.message || err);
+    basicAuthError.classList.remove('hidden');
+    return;
+  }
+  basicAuthError.classList.add('hidden');
+  await updateRecording(rec.id, { basicAuth: normalized });
+  await refreshList();
+  await renderDetail();
+  flashCopyMsg(normalized ? t('basicAuth.saved', { n: normalized.length }) : t('basicAuth.cleared'));
+});
+
+clearBasicAuthBtn.addEventListener('click', async () => {
+  const rec = getCurrentRecording();
+  if (!rec) return;
+  if (!confirm(t('basicAuth.confirmClear'))) return;
+  await updateRecording(rec.id, { basicAuth: undefined });
+  await refreshList();
+  await renderDetail();
+  flashCopyMsg(t('basicAuth.cleared'));
+});
+
 async function renderDetail() {
   const rec = getCurrentRecording();
   if (!rec) return;
@@ -569,12 +716,14 @@ async function renderDetail() {
   const isJson = currentFormat === 'json';
   const isRecSettings = currentFormat === 'recSettings';
   const isDataset = currentFormat === 'dataset';
-  const isCode = !isSteps && !isJson && !isRecSettings && !isDataset;
+  const isBasicAuth = currentFormat === 'basicAuth';
+  const isCode = !isSteps && !isJson && !isRecSettings && !isDataset && !isBasicAuth;
 
   stepsPanel.classList.toggle('hidden', !isSteps);
   jsonPanel.classList.toggle('hidden', !isJson);
   recSettingsPanel.classList.toggle('hidden', !isRecSettings);
   datasetPanel.classList.toggle('hidden', !isDataset);
+  basicAuthPanel.classList.toggle('hidden', !isBasicAuth);
   codePanel.classList.toggle('hidden', !isCode);
 
   saveJsonBtn.classList.toggle('hidden', !isJson);
@@ -584,8 +733,10 @@ async function renderDetail() {
   saveRecSettingsBtn.classList.toggle('hidden', !isRecSettings);
   clearRecSettingsBtn.classList.toggle('hidden', !isRecSettings);
   saveDatasetBtn.classList.toggle('hidden', !isDataset);
-  copyBtn.classList.toggle('hidden', isRecSettings || isDataset);
-  downloadBtn.classList.toggle('hidden', isRecSettings || isDataset);
+  saveBasicAuthBtn.classList.toggle('hidden', !isBasicAuth);
+  clearBasicAuthBtn.classList.toggle('hidden', !isBasicAuth);
+  copyBtn.classList.toggle('hidden', isRecSettings || isDataset || isBasicAuth);
+  downloadBtn.classList.toggle('hidden', isRecSettings || isDataset || isBasicAuth);
 
   // 個別設定を持つ録画はタブに印をつけて気づけるようにする
   const overrideCount = rec.settings ? Object.keys(rec.settings).length : 0;
@@ -594,6 +745,16 @@ async function renderDetail() {
     : t('tab.recSettings');
   const rowCount = Array.isArray(rec.dataset) ? rec.dataset.length : 0;
   datasetTab.textContent = rowCount ? t('tab.datasetWithCount', { n: rowCount }) : t('tab.dataset');
+  // 資格情報を持つ録画は、タブを見ただけで分かるようにしておく
+  const authCount = Array.isArray(rec.basicAuth) ? rec.basicAuth.length : 0;
+  basicAuthTab.textContent = authCount ? t('tab.basicAuthWithCount', { n: authCount }) : t('tab.basicAuth');
+
+  if (isBasicAuth) {
+    basicAuthDraft = (rec.basicAuth || []).map((e) => ({ ...e }));
+    basicAuthError.classList.add('hidden');
+    renderBasicAuth();
+    return;
+  }
 
   if (isDataset) {
     datasetEditor.value = rowCount ? JSON.stringify(rec.dataset, null, 2) : '';
@@ -766,6 +927,7 @@ saveJsonBtn.addEventListener('click', async () => {
     startUrl: parsed.startUrl,
     steps: parsed.steps,
     settings: parsed.settings,
+    basicAuth: parsed.basicAuth,
     dataset: parsed.dataset,
   });
   await refreshList();
@@ -1005,6 +1167,7 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
       startUrl: withFiles.startUrl,
       steps: withFiles.steps,
       settings: withFiles.settings,
+      basicAuth: withFiles.basicAuth,
       dataset: withFiles.dataset,
       createdAt: withFiles.createdAt || now,
       updatedAt: now,

@@ -24,13 +24,13 @@ for (const sel of ['.tab-btn', '#recordingsBody', '#settingsFields']) {
 }
 console.log('OK: key selectors resolve');
 
-// タブは steps / json / playwright / puppeteer の4つ
+// タブの並び（追加したらここも直す）
 const tabs = [...doc.querySelectorAll('.tab-btn')].map((b) => b.dataset.format || b.dataset.tab);
-assert.deepEqual(tabs, ['steps', 'json', 'dataset', 'recSettings', 'playwright', 'puppeteer']);
+assert.deepEqual(tabs, ['steps', 'json', 'dataset', 'recSettings', 'basicAuth', 'playwright', 'puppeteer']);
 console.log('OK: tabs are', tabs.join(' / '));
 
 // 各タブに対応するパネルが存在すること
-for (const id of ['stepsPanel', 'jsonPanel', 'datasetPanel', 'recSettingsPanel', 'codePanel']) {
+for (const id of ['stepsPanel', 'jsonPanel', 'datasetPanel', 'recSettingsPanel', 'basicAuthPanel', 'codePanel']) {
   assert.ok(doc.getElementById(id), `${id} がありません`);
 }
 // データセット編集の各要素
@@ -44,6 +44,17 @@ for (const id of ['recSettingsFields', 'recSettingsTab', 'saveRecSettingsBtn', '
   assert.ok(doc.getElementById(id), `${id} がありません`);
 }
 console.log('OK: per-recording settings panel and controls present');
+
+// Basic 認証パネルの各要素
+for (const id of ['basicAuthTab', 'basicAuthRows', 'basicAuthEmpty', 'basicAuthError', 'basicAuthCount',
+                  'basicAuthAddBtn', 'basicAuthShowPass', 'saveBasicAuthBtn', 'clearBasicAuthBtn']) {
+  assert.ok(doc.getElementById(id), `${id} がありません`);
+}
+// 入力欄の見た目（横並び）が CSS で定義されているか
+for (const cls of ['.auth-rows', '.auth-row', '.auth-field']) {
+  assert.ok(css.includes(cls), `${cls} の定義がありません`);
+}
+console.log('OK: basic auth panel and controls present');
 
 // 状態表示に使うクラスが CSS に定義されているか
 for (const cls of ['running', 'done', 'error', 'skipped', 'warned']) {
@@ -71,7 +82,7 @@ console.log('\nALL DOM WIRING CHECKS PASSED');
   const styled = new JSDOM(html.replace('<link rel="stylesheet" href="manager.css" />', `<style>${css}</style>`));
   const w = styled.window;
   const d = w.document;
-  const panels = ['stepsPanel', 'jsonPanel', 'datasetPanel', 'recSettingsPanel', 'codePanel'];
+  const panels = ['stepsPanel', 'jsonPanel', 'datasetPanel', 'recSettingsPanel', 'basicAuthPanel', 'codePanel'];
   for (const active of panels) {
     for (const id of panels) d.getElementById(id).classList.toggle('hidden', id !== active);
     for (const id of panels) {

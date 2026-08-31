@@ -836,3 +836,53 @@ li.v-info .v-badge {
   font-size: 12px;
   white-space: nowrap;
 }
+
+/* --- Basic 認証 --- */
+.auth-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auth-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* 対象URLは長くなりがちなので、ユーザー名・パスワードより広く取る */
+.auth-row .auth-field:first-child {
+  flex: 2 1 0;
+}
+
+.auth-field span {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.auth-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.auth-row .icon-btn {
+  flex: 0 0 auto;
+  margin-bottom: 4px;
+}

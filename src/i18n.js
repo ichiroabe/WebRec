@@ -58,6 +58,7 @@ const MESSAGES = {
     'bg.replayBusy': '別の再生が実行中です。終わってからお試しください。',
     'bg.assertTextFailed': '文言が一致しません。期待「{expected}」 実際「{actual}」',
     'bg.assertNotVisible': '要素が見えていません: {selector}',
+    'bg.basicAuthFailed': 'Basic認証の設定を適用できませんでした: {error}',
     'bg.assertStillThere': '要素が消えていません: {selector}',
     'bg.recordingNotFound': '録画が見つかりません',
     'bg.newTabNotOpened': '新しいタブが開きませんでした',
@@ -99,6 +100,8 @@ const MESSAGES = {
     'tab.datasetWithCount': 'データ（繰り返し） ●{n}行',
     'tab.recSettings': 'この録画の設定',
     'tab.recSettingsWithCount': 'この録画の設定 ●{n}',
+    'tab.basicAuth': 'Basic認証',
+    'tab.basicAuthWithCount': 'Basic認証 ●{n}',
     'tab.playwright': 'Playwright',
     'tab.puppeteer': 'Puppeteer',
 
@@ -189,6 +192,27 @@ const MESSAGES = {
     'recSettings.inherit': ' 全体設定に従う（現在 {value}）',
     'recSettings.clearAll': 'すべて全体設定に戻す',
     'recSettings.cleared': '全体設定に戻しました',
+
+    // --- Basic認証 ---
+    'basicAuth.hint':
+      'ブラウザが出すユーザー名/パスワードのダイアログは、ページの中ではなくブラウザ側にあるため操作できません。' +
+      'そこで再生中だけ <code>Authorization</code> ヘッダを付け、<strong>ダイアログを出させない</strong>ようにします。' +
+      '対象URLは<strong>先頭一致</strong>です（<code>https://example.com/</code> ならサイト全体、' +
+      '<code>https://example.com/admin/</code> ならその配下だけ）。' +
+      '値は<strong>パスワードと同等</strong>で、JSON エクスポートや書き出したスクリプトにも含まれます。テスト用アカウントに限って使ってください。',
+    'basicAuth.urlLabel': '対象URL（先頭一致）',
+    'basicAuth.userLabel': 'ユーザー名',
+    'basicAuth.passLabel': 'パスワード',
+    'basicAuth.add': '＋ 追加',
+    'basicAuth.removeTitle': 'この設定を削除',
+    'basicAuth.showPass': 'パスワードを表示',
+    'basicAuth.none': 'まだ設定がありません。「＋ 追加」から登録してください。',
+    'basicAuth.count': '{n} 件',
+    'basicAuth.saved': 'Basic認証の設定を保存しました（{n} 件）',
+    'basicAuth.cleared': 'Basic認証の設定を削除しました',
+    'basicAuth.clearAll': 'すべて削除',
+    'basicAuth.confirmClear': 'この録画の Basic認証の設定をすべて削除しますか？',
+    'basicAuth.splitNotice': 'URL に含まれていた資格情報を、ユーザー名・パスワード欄に移しました。',
 
     // --- 全体設定 ---
     'settings.title': '再生の設定',
@@ -340,6 +364,17 @@ const MESSAGES = {
     'v.disabledAndOptional': '{at}: 無効化されているため optional は効きません',
     'v.passwordPlaceholder': '{at}: <PASSWORD> のままです。実際の値に書き換えてください',
     'v.otpPlaceholder': '{at}: ワンタイムパスワードは記録した数字が使えません。{{totp:シークレット}} に書き換えてください',
+    'v.basicAuthAt': 'Basic認証 {n} 件目',
+    'v.basicAuthBadEntry': '{at}: 対象URL・ユーザー名・パスワードを持つ項目である必要があります',
+    'v.basicAuthUrlEmpty': '{at}: 対象URLがありません',
+    'v.basicAuthUrlUnparsable': '{at}: 対象URL "{url}" を URL として解釈できません',
+    'v.basicAuthUrlScheme': '{at}: 対象URL は http/https である必要があります',
+    'v.basicAuthUrlCredentials': '{at}: 対象URL に user:pass@ を含めないでください（ユーザー名・パスワード欄に分けてください）',
+    'v.basicAuthUrlSpecials': '{at}: 対象URL に * ^ | は使えません（先頭一致で判定します）',
+    'v.basicAuthNoUser': '{at}: ユーザー名が空です',
+    'v.basicAuthNoPassword': '{at}: パスワードが空です',
+    'v.basicAuthPlaceholder': '{at}: <PASSWORD> のままです。実際の値に書き換えてください',
+    'v.basicAuthStored': 'Basic認証の資格情報が {n} 件保存されています。JSON エクスポートや書き出したスクリプトにも含まれるため、共有先にご注意ください',
     'v.dataNoColumn': '{at}: {var} に列名がありません',
     'v.dataWithoutDataset': '{at}: {var} を使っていますが「データ」タブが空です',
     'v.dataUnknownColumn': '{at}: データに「{column}」列がありません（ある列: {available}）',
@@ -413,6 +448,7 @@ const MESSAGES = {
     'bg.replayBusy': 'Another replay is running. Please wait for it to finish.',
     'bg.assertTextFailed': 'Text did not match. Expected "{expected}", got "{actual}"',
     'bg.assertNotVisible': 'Element is not visible: {selector}',
+    'bg.basicAuthFailed': 'Could not apply the basic auth settings: {error}',
     'bg.assertStillThere': 'Element is still there: {selector}',
     'bg.recordingNotFound': 'Recording not found',
     'bg.newTabNotOpened': 'No new tab was opened',
@@ -454,6 +490,8 @@ const MESSAGES = {
     'tab.datasetWithCount': 'Data (loop) ●{n} rows',
     'tab.recSettings': 'Settings for this recording',
     'tab.recSettingsWithCount': 'Settings for this recording ●{n}',
+    'tab.basicAuth': 'Basic auth',
+    'tab.basicAuthWithCount': 'Basic auth ●{n}',
     'tab.playwright': 'Playwright',
     'tab.puppeteer': 'Puppeteer',
 
@@ -544,6 +582,27 @@ const MESSAGES = {
     'recSettings.inherit': ' Use global setting (currently {value})',
     'recSettings.clearAll': 'Reset all to global',
     'recSettings.cleared': 'Reset to global settings',
+
+    // --- Basic auth ---
+    'basicAuth.hint':
+      'The username/password dialog belongs to the browser, not the page, so it cannot be driven from a script. ' +
+      'Instead WebRec adds an <code>Authorization</code> header while replaying, so the dialog <strong>never appears</strong>. ' +
+      'The target URL is matched as a <strong>prefix</strong> (<code>https://example.com/</code> covers the whole site, ' +
+      '<code>https://example.com/admin/</code> only that subtree). ' +
+      'Treat these values <strong>like a password</strong>: they are included in JSON exports and in generated scripts. Use test accounts only.',
+    'basicAuth.urlLabel': 'Target URL (prefix match)',
+    'basicAuth.userLabel': 'Username',
+    'basicAuth.passLabel': 'Password',
+    'basicAuth.add': '+ Add',
+    'basicAuth.removeTitle': 'Remove this entry',
+    'basicAuth.showPass': 'Show password',
+    'basicAuth.none': 'No entries yet. Use "+ Add" to create one.',
+    'basicAuth.count': '{n} entries',
+    'basicAuth.saved': 'Basic auth saved ({n} entries)',
+    'basicAuth.cleared': 'Basic auth entries removed',
+    'basicAuth.clearAll': 'Remove all',
+    'basicAuth.confirmClear': 'Remove every basic auth entry from this recording?',
+    'basicAuth.splitNotice': 'Credentials found in the URL were moved into the username/password fields.',
 
     // --- Global settings ---
     'settings.title': 'Replay settings',
@@ -694,6 +753,17 @@ const MESSAGES = {
     'v.disabledAndOptional': '{at}: the step is disabled, so optional has no effect',
     'v.passwordPlaceholder': '{at}: still <PASSWORD>. Replace it with the real value',
     'v.otpPlaceholder': '{at}: a recorded one-time code cannot be reused. Replace it with {{totp:SECRET}}',
+    'v.basicAuthAt': 'Basic auth #{n}',
+    'v.basicAuthBadEntry': '{at}: must be an entry with a target URL, username and password',
+    'v.basicAuthUrlEmpty': '{at}: the target URL is missing',
+    'v.basicAuthUrlUnparsable': '{at}: "{url}" cannot be parsed as a URL',
+    'v.basicAuthUrlScheme': '{at}: the target URL must be http/https',
+    'v.basicAuthUrlSpecials': '{at}: the target URL cannot contain * ^ | (it is matched as a prefix)',
+    'v.basicAuthUrlCredentials': '{at}: do not put user:pass@ in the target URL (use the username/password fields)',
+    'v.basicAuthNoUser': '{at}: the username is empty',
+    'v.basicAuthNoPassword': '{at}: the password is empty',
+    'v.basicAuthPlaceholder': '{at}: still <PASSWORD>. Replace it with the real value',
+    'v.basicAuthStored': '{n} basic auth credentials are stored in this recording. They are included in JSON exports and generated scripts — be careful where you share them',
     'v.dataNoColumn': '{at}: {var} has no column name',
     'v.dataWithoutDataset': '{at}: {var} is used but the Data tab is empty',
     'v.dataUnknownColumn': '{at}: the data has no "{column}" column (available: {available})',
