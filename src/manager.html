@@ -51,6 +51,7 @@
           <button class="tab-btn" data-format="json" data-i18n="tab.json">JSON (editable)</button>
           <button class="tab-btn" id="datasetTab" data-format="dataset" data-i18n="tab.dataset">Data (loop)</button>
           <button class="tab-btn" id="recSettingsTab" data-format="recSettings" data-i18n="tab.recSettings">Settings for this recording</button>
+          <button class="tab-btn" id="basicAuthTab" data-format="basicAuth" data-i18n="tab.basicAuth">Basic auth</button>
           <button class="tab-btn" data-format="playwright" data-i18n="tab.playwright">Playwright</button>
           <button class="tab-btn" data-format="puppeteer" data-i18n="tab.puppeteer">Puppeteer</button>
         </div>
@@ -96,6 +97,21 @@
           <div id="recSettingsFields"></div>
         </div>
 
+        <div id="basicAuthPanel" class="panel hidden">
+          <p class="panel-hint" data-i18n-html="basicAuth.hint"></p>
+          <div class="dataset-toolbar">
+            <button id="basicAuthAddBtn" class="btn" data-i18n="basicAuth.add">+ Add</button>
+            <label class="check-row">
+              <input id="basicAuthShowPass" type="checkbox" />
+              <span data-i18n="basicAuth.showPass">Show password</span>
+            </label>
+            <span id="basicAuthCount" class="count-label"></span>
+          </div>
+          <div id="basicAuthRows" class="auth-rows"></div>
+          <p id="basicAuthEmpty" class="empty hidden" data-i18n="basicAuth.none"></p>
+          <p id="basicAuthError" class="json-error hidden"></p>
+        </div>
+
         <div class="modal-footer">
           <button id="copyBtn" class="btn" data-i18n="common.copy">Copy</button>
           <button id="downloadBtn" class="btn" data-i18n="common.download">Download</button>
@@ -105,6 +121,8 @@
           <button id="revertJsonBtn" class="btn hidden" data-i18n="common.revert">Revert</button>
           <button id="saveRecSettingsBtn" class="btn btn-accent hidden" data-i18n="common.save">Save</button>
           <button id="clearRecSettingsBtn" class="btn hidden" data-i18n="recSettings.clearAll">Reset all to global</button>
+          <button id="saveBasicAuthBtn" class="btn btn-accent hidden" data-i18n="common.save">Save</button>
+          <button id="clearBasicAuthBtn" class="btn hidden" data-i18n="basicAuth.clearAll">Remove all</button>
           <button id="saveDatasetBtn" class="btn btn-accent hidden" data-i18n="common.save">Save</button>
           <span id="copyMsg" class="copy-msg hidden"></span>
         </div>
