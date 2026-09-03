@@ -16,10 +16,10 @@
   let suppressClickTimer = null;
 
   // content script は module ではないため i18n.js を import できない。
-  // オーバーレイで使う2語だけをここに持つ。
+  // オーバーレイで使う言葉だけをここに持つ（i18n.js の overlay.* と同じ内容）。
   const OVERLAY_TEXT = {
-    ja: { recording: 'WebRec 録画中', stop: '■ 停止' },
-    en: { recording: 'WebRec recording', stop: '■ Stop' },
+    ja: { recording: 'WebRec 録画中', stop: '■ 停止', stopFailed: '停止できませんでした' },
+    en: { recording: 'WebRec recording', stop: '■ Stop', stopFailed: 'Could not stop' },
   };
   let overlayLang = 'ja';
 
@@ -646,8 +646,22 @@
     stopBtn.textContent = OVERLAY_TEXT[overlayLang].stop;
     stopBtn.style.cssText =
       'background:#dc2626;color:#fff;border:none;border-radius:999px;padding:3px 10px;font:inherit;cursor:pointer';
-    stopBtn.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ type: 'STOP_RECORDING' }).catch(() => {});
+    stopBtn.addEventListener('click', async () => {
+      stopBtn.disabled = true;
+      let res = null;
+      try {
+        res = await chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
+      } catch (_) {
+        /* service worker が応答しない。理由は下で出す */
+      }
+      if (res && res.ok) return; // 成功なら WEBREC_STOP でオーバーレイごと消える
+      if (!overlayEl) return; // 待っている間に別の入口から停止されていた
+      // 保存できなかったときに黙って閉じると、記録した内容がどこにも残らないまま
+      // 「止まったように見える」状態になる。理由をその場に出して、押し直せるようにする。
+      stopBtn.disabled = false;
+      label.textContent = (res && res.error) || OVERLAY_TEXT[overlayLang].stopFailed;
+      overlayEl.style.maxWidth = '80vw';
+      overlayEl.style.borderRadius = '10px';
     });
 
     overlayEl.append(dot, label, stopBtn);
@@ -673,7 +687,8 @@
   async function startListening() {
     if (recording) return;
     recording = true;
-    await loadOverlayLang(); // オーバーレイを出す前に表示言語を確定させる
+    // リスナーは同期で付ける。表示言語の読み込み（storage への往復）を待ってから付けると、
+    // その間の操作が丸ごと記録から抜け落ちる。
     document.addEventListener('click', onClick, true);
     document.addEventListener('change', onChange, true);
     document.addEventListener('keydown', onKeyDown, true);
@@ -689,6 +704,8 @@
     document.addEventListener('mouseup', onMouseUp, true);
     window.addEventListener('message', onDialogMessage);
     if (!IS_TOP) return; // オーバーレイは最上位フレームだけに表示する
+    await loadOverlayLang(); // オーバーレイを出す前に表示言語を確定させる
+    if (!recording) return; // 待っている間に停止されていたら出さない
     if (document.body) ensureOverlay();
     else document.addEventListener('DOMContentLoaded', ensureOverlay, { once: true });
   }

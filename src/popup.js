@@ -30,6 +30,9 @@ async function refresh() {
     document.getElementById('startUrlHint').textContent = t('popup.startUrl', { url: state.startUrl });
     showView(recordingView);
   } else if (state && state.isRecording && !state.isCurrentTab) {
+    // 記録元のタブが消えていて保存もできていない場合は、理由を出さないと
+    // 「他のタブで記録中」のまま開始できない理由が分からない。
+    if (state.staleError) showError(state.staleError);
     idleHint.textContent = t('popup.otherTabHint');
     showView(idleView);
     document.getElementById('startBtn').disabled = true;

@@ -60,12 +60,19 @@ async function notifyTab(tabId, message) {
 // 拡張機能を再読み込みした後など、既に開いていたタブには content script が
 // 注入されていない。その状態で記録を始めても何も拾えないため、
 // 生存確認して必要なら注入し直す（ページの再読み込みを不要にする）。
+// 失敗したときは理由も一緒に返す。「監視できません」だけでは、権限が付いていないのか
+// そもそも注入できないページなのかが利用者に分からないため。
 async function ensureContentScript(tabId) {
   try {
     const res = await chrome.tabs.sendMessage(tabId, { type: 'WEBREC_PING' });
-    if (res && res.ok) return true;
+    if (res && res.ok) return { ok: true };
   } catch (_) {
     /* 未注入。以下で注入する */
+  }
+  // manifest に権限を足しても、既に読み込まれている拡張機能には反映されないことがある
+  // （chrome.alarms と同じ事情）。その状態だと chrome.scripting ごと存在しない。
+  if (!chrome.scripting || !chrome.scripting.executeScript) {
+    return { ok: false, error: t('bg.scriptingMissing') };
   }
   try {
     await chrome.scripting.executeScript({
@@ -73,10 +80,10 @@ async function ensureContentScript(tabId) {
       files: ['src/content.js'],
       injectImmediately: true, // 読み込み中のページでも待たされないようにする
     });
-    return true;
+    return { ok: true };
   } catch (err) {
     console.warn('WebRec: failed to inject content script', err);
-    return false;
+    return { ok: false, error: String(err && err.message ? err.message : err) };
   }
 }
 
@@ -116,8 +123,8 @@ async function startRecording({ tabId, startUrl, name }) {
   // 監視できる状態にしてからセッションを作る。ここで失敗したまま始めると
   // 「記録中なのに何も記録されない」状態になってしまう。
   const ready = await ensureContentScript(tabId);
-  if (!ready) {
-    throw new Error(t('bg.cannotObserve'));
+  if (!ready.ok) {
+    throw new Error(ready.error ? t('bg.cannotObserveReason', { reason: ready.error }) : t('bg.cannotObserve'));
   }
 
   session = {
@@ -136,17 +143,26 @@ async function startRecording({ tabId, startUrl, name }) {
   return { ok: true, id: session.id };
 }
 
+// 停止は複数の入口（ポップアップ / オーバーレイの停止ボタン / タブを閉じる）から
+// ほぼ同時に呼ばれうる。同じ録画を二重に保存しないよう、実行中は同じ結果を返す。
+let stopping = null;
+
 async function stopRecording() {
+  if (stopping) return stopping;
+  stopping = doStopRecording();
+  try {
+    return await stopping;
+  } finally {
+    stopping = null;
+  }
+}
+
+async function doStopRecording() {
   await restoreSession();
   if (!session) {
     return { ok: false, error: t('bg.notRecording') };
   }
   const finished = session;
-  session = null;
-  await chrome.storage.session.remove(SESSION_KEY);
-  await setBadge(finished.tabId, false);
-  await unhookDialogsForRecording(finished.tabId); // 記録が終わったら本物のダイアログに戻す
-  await notifyTab(finished.tabId, { type: 'WEBREC_STOP' });
 
   // 記録し終えてから整理する。記録中に間引くと条件を変えられないため、
   // 生のまま貯めておいて、ここでまとめて畳む。
@@ -160,7 +176,22 @@ async function stopRecording() {
     createdAt: finished.startedAt,
     updatedAt: Date.now(),
   };
-  await saveRecording(rec);
+
+  // 保存してからセッションを捨てる。先に捨てると、保存に失敗したときに
+  // 「停止できたのに管理画面には何も無い」状態になり、記録が丸ごと消える。
+  // 失敗したときはセッションを残すので、もう一度停止すればやり直せる（put なので重複しない）。
+  try {
+    await saveRecording(rec);
+  } catch (err) {
+    console.warn('WebRec: failed to save recording', err);
+    return { ok: false, error: t('bg.saveFailed', { reason: String(err && err.message ? err.message : err) }) };
+  }
+
+  session = null;
+  await chrome.storage.session.remove(SESSION_KEY);
+  await setBadge(finished.tabId, false);
+  await unhookDialogsForRecording(finished.tabId); // 記録が終わったら本物のダイアログに戻す
+  await notifyTab(finished.tabId, { type: 'WEBREC_STOP' });
   return { ok: true, id: rec.id, stepCount: rec.steps.length, normalized: tidy.removed };
 }
 
@@ -201,9 +232,30 @@ async function recordEvent(tabId, step) {
   await persistSession();
 }
 
+async function tabExists(tabId) {
+  if (!Number.isFinite(tabId)) return false;
+  try {
+    return !!(await chrome.tabs.get(tabId));
+  } catch (_) {
+    return false; // 既に閉じられている
+  }
+}
+
 async function getState(tabId) {
   await restoreSession();
   if (!session) return { isRecording: false };
+
+  // 記録中のタブが消えているのに session が残っていると、ポップアップは
+  // 「他のタブで記録中」のまま開始ボタンを出さなくなり、二度と記録を始められない。
+  // onRemoved を取りこぼした場合（service worker が止まっていた等）の受け皿として、
+  // ここで気づいたら締める。保存も stopRecording 側でやり直される。
+  let staleError = null;
+  if (!(await tabExists(session.tabId))) {
+    const res = await stopRecording();
+    if (!session) return { isRecording: false };
+    staleError = res && res.error; // 保存に失敗して残っている。理由をポップアップに出す
+  }
+
   return {
     isRecording: true,
     isCurrentTab: session.tabId === tabId,
@@ -211,6 +263,7 @@ async function getState(tabId) {
     startUrl: session.startUrl,
     name: session.name,
     stepCount: session.steps.length,
+    ...(staleError ? { staleError } : {}),
   };
 }
 

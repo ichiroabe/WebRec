@@ -63,8 +63,10 @@ const overlayBlock = contentSrc.slice(contentSrc.indexOf('const OVERLAY_TEXT'), 
 for (const [lang, key, prop] of [
   ['ja', 'overlay.recording', 'recording'],
   ['ja', 'overlay.stop', 'stop'],
+  ['ja', 'overlay.stopFailed', 'stopFailed'],
   ['en', 'overlay.recording', 'recording'],
   ['en', 'overlay.stop', 'stop'],
+  ['en', 'overlay.stopFailed', 'stopFailed'],
 ]) {
   const block = overlayBlock.slice(overlayBlock.indexOf(`${lang}: {`));
   const m = new RegExp(`${prop}: '([^']*)'`).exec(block);

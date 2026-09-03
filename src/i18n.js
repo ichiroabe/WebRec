@@ -49,6 +49,9 @@ const MESSAGES = {
     'bg.alreadyRecording': 'すでに録画中です',
     'bg.notRecording': '録画は開始されていません',
     'bg.cannotObserve': 'このページを監視できませんでした。ページを再読み込みしてからお試しください。',
+    'bg.cannotObserveReason': 'このページを監視できませんでした（{reason}）。ページを再読み込みしてからお試しください。',
+    'bg.scriptingMissing': 'ページに注入する権限が有効になっていません。ブラウザの拡張機能ページで WebRec を再読み込み（または入れ直し）してください。',
+    'bg.saveFailed': '録画を保存できませんでした（{reason}）。記録は残っているので、管理画面を開いている他のタブを閉じてから、もう一度停止してください。',
     'bg.defaultName': '録画 {when}',
     'bg.tabGone': '再生用のタブが見つかりません（再生中のウィンドウを閉じませんでしたか？）',
     'bg.loadTimeout': 'ページ読み込みがタイムアウトしました',
@@ -71,6 +74,7 @@ const MESSAGES = {
     // --- 記録中のオーバーレイ（content script は module ではないため content.js 側にも同じ文言を持つ） ---
     'overlay.recording': 'WebRec 録画中',
     'overlay.stop': '■ 停止',
+    'overlay.stopFailed': '停止できませんでした',
 
     // --- 一覧 ---
     'list.import': 'インポート',
@@ -404,6 +408,9 @@ const MESSAGES = {
     'bg.alreadyRecording': 'Already recording',
     'bg.notRecording': 'Recording has not been started',
     'bg.cannotObserve': 'Could not observe this page. Reload the page and try again.',
+    'bg.cannotObserveReason': 'Could not observe this page ({reason}). Reload the page and try again.',
+    'bg.scriptingMissing': 'The permission to inject into pages is not active. Reload (or reinstall) WebRec from the browser extensions page.',
+    'bg.saveFailed': 'Could not save the recording ({reason}). The recording is still held, so close any other tab with the WebRec manager open and stop again.',
     'bg.defaultName': 'Recording {when}',
     'bg.tabGone': 'The replay tab is gone (was the replay window closed?)',
     'bg.loadTimeout': 'The page took too long to load',
@@ -426,6 +433,7 @@ const MESSAGES = {
     // --- Recording overlay (content.js keeps its own copy: it is not a module) ---
     'overlay.recording': 'WebRec recording',
     'overlay.stop': '■ Stop',
+    'overlay.stopFailed': 'Could not stop',
 
     // --- List ---
     'list.import': 'Import',
